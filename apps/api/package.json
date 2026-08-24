@@ -1,0 +1,28 @@
+{
+  "name": "@skein-chatbot/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@fastify/cors": "^11.2.0",
+    "@skein-chatbot/adapter-dify": "workspace:*",
+    "@skein-chatbot/adapter-mock": "workspace:*",
+    "@skein-chatbot/contracts": "workspace:*",
+    "@skein-chatbot/core": "workspace:*",
+    "@skein-chatbot/observability": "workspace:*",
+    "@skein-chatbot/postgres": "workspace:*",
+    "@skein-chatbot/test-utils": "workspace:*",
+    "dotenv": "^17.2.3",
+    "fastify": "^5.6.2",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "tsx": "^4.20.6"
+  }
+}

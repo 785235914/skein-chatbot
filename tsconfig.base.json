@@ -1,0 +1,30 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "useUnknownInCatchVariables": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "verbatimModuleSyntax": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "baseUrl": ".",
+    "paths": {
+      "@skein-chatbot/contracts": ["packages/contracts/src/index.ts"],
+      "@skein-chatbot/core": ["packages/core/src/index.ts"],
+      "@skein-chatbot/adapter-mock": ["packages/adapters/mock/src/index.ts"],
+      "@skein-chatbot/adapter-dify": ["packages/adapters/dify/src/index.ts"],
+      "@skein-chatbot/postgres": ["packages/persistence/postgres/src/index.ts"],
+      "@skein-chatbot/observability": ["packages/observability/src/index.ts"],
+      "@skein-chatbot/test-utils": ["packages/test-utils/src/index.ts"]
+    }
+  }
+}

@@ -1,0 +1,148 @@
+generator client {
+  provider               = "prisma-client"
+  output                 = "../packages/persistence/postgres/src/generated/prisma"
+  moduleFormat           = "esm"
+  generatedFileExtension = "ts"
+  importFileExtension    = "js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum SessionStatus {
+  ACTIVE
+  RESET
+}
+
+enum MessageRole {
+  USER
+  ASSISTANT
+  SYSTEM_EVENT
+}
+
+enum ExecutionMode {
+  QUICK
+  DEEP
+}
+
+enum TurnStatus {
+  ANSWER
+  PARTIAL
+  NO_EVIDENCE
+  HANDOFF
+  FAILED
+}
+
+model Session {
+  id                  String                @id @db.VarChar(191)
+  userId              String                @map("user_id") @db.VarChar(191)
+  status              SessionStatus         @default(ACTIVE)
+  createdAt           DateTime              @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt           DateTime              @updatedAt @map("updated_at") @db.Timestamptz(3)
+  lastActiveAt        DateTime              @map("last_active_at") @db.Timestamptz(3)
+  messages            Message[]
+  contextState        ContextState?
+  conversationSummary ConversationSummary?
+  providerBindings    ProviderBinding[]
+  runtimeEvents       RuntimeEvent[]
+  auditLogs           AuditLog[]
+
+  @@index([userId, lastActiveAt])
+  @@map("sessions")
+}
+
+model Message {
+  id          String      @id @db.VarChar(191)
+  sessionId   String      @map("session_id") @db.VarChar(191)
+  role        MessageRole
+  content     String      @db.Text
+  createdAt   DateTime    @map("created_at") @db.Timestamptz(3)
+  compactedAt DateTime?   @map("compacted_at") @db.Timestamptz(3)
+  session     Session     @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, createdAt, id])
+  @@map("messages")
+}
+
+model Turn {
+  turnId       String        @id @map("turn_id") @db.VarChar(191)
+  sessionId    String        @map("session_id") @db.VarChar(191)
+  traceId      String        @unique @map("trace_id") @db.VarChar(191)
+  mode         ExecutionMode
+  provider     String        @db.VarChar(191)
+  providerKey  String        @map("provider_key") @db.VarChar(191)
+  status       TurnStatus
+  startedAt    DateTime      @map("started_at") @db.Timestamptz(3)
+  completedAt  DateTime?     @map("completed_at") @db.Timestamptz(3)
+  latencyMs    Int           @map("latency_ms")
+  errorCode    String?       @map("error_code") @db.VarChar(191)
+  safeMetadata Json?         @map("safe_metadata")
+
+  // Failed turns may precede creation of a Session aggregate, so sessionId is
+  // intentionally indexed rather than constrained by a foreign key.
+  @@index([sessionId, startedAt])
+  @@map("turns")
+}
+
+model ContextState {
+  sessionId String   @id @map("session_id") @db.VarChar(191)
+  revision  Int
+  value     Json
+  updatedAt DateTime @map("updated_at") @db.Timestamptz(3)
+  session   Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@map("context_states")
+}
+
+model ConversationSummary {
+  sessionId String   @id @map("session_id") @db.VarChar(191)
+  value     Json
+  createdAt DateTime @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @map("updated_at") @db.Timestamptz(3)
+  session   Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@map("conversation_summaries")
+}
+
+model ProviderBinding {
+  sessionId              String   @map("session_id") @db.VarChar(191)
+  provider               String   @db.VarChar(191)
+  providerKey            String   @map("provider_key") @db.VarChar(191)
+  externalConversationId String   @map("external_conversation_id") @db.Text
+  createdAt              DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt              DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+  session                Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@id([sessionId, provider, providerKey])
+  @@map("provider_bindings")
+}
+
+model RuntimeEvent {
+  id        String   @id @default(uuid()) @db.Uuid
+  sessionId String?  @map("session_id") @db.VarChar(191)
+  turnId    String?  @map("turn_id") @db.VarChar(191)
+  type      String   @db.VarChar(191)
+  payload   Json
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  session   Session? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+
+  @@index([sessionId, createdAt])
+  @@index([turnId, createdAt])
+  @@map("runtime_events")
+}
+
+model AuditLog {
+  id        String   @id @default(uuid()) @db.Uuid
+  sessionId String?  @map("session_id") @db.VarChar(191)
+  traceId   String?  @map("trace_id") @db.VarChar(191)
+  action    String   @db.VarChar(191)
+  outcome   String   @db.VarChar(64)
+  metadata  Json?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  session   Session? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+
+  @@index([sessionId, createdAt])
+  @@index([traceId])
+  @@map("audit_logs")
+}

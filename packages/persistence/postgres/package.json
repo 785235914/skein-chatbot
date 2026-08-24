@@ -1,0 +1,31 @@
+{
+  "name": "@skein-chatbot/postgres",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "pnpm prisma:generate && tsc -p tsconfig.build.json",
+    "prisma:generate": "prisma generate --config prisma.config.ts",
+    "prisma:validate": "prisma validate --config prisma.config.ts",
+    "prisma:migrate": "tsx scripts/migrate.ts",
+    "test:postgres": "tsx scripts/restart-smoke.ts"
+  },
+  "dependencies": {
+    "@prisma/adapter-pg": "7.9.1",
+    "@prisma/client": "7.9.1",
+    "@skein-chatbot/core": "workspace:*",
+    "pg": "^8.16.3"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.15.5",
+    "prisma": "7.9.1"
+  }
+}

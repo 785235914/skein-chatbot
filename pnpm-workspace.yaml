@@ -1,0 +1,9 @@
+packages:
+  - apps/*
+  - packages/*
+  - packages/adapters/*
+  - packages/persistence/*
+allowBuilds:
+  '@prisma/engines': true
+  esbuild: true
+  prisma: true

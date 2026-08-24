@@ -1,0 +1,55 @@
+name: default
+
+# These keys map provider-neutral turn data to Dify app variables under
+# the standard `inputs` envelope. Root `query`, `response_mode`, `user`, and
+# `conversation_id` are always owned by the adapter and cannot be renamed.
+request:
+  query: query
+  context: context
+  memory: memory
+  mode: mode
+  traceId: trace_id
+  turnId: turn_id
+  sessionId: session_id
+
+modeMapping:
+  QUICK: QUICK
+  DEEP: DEEP
+
+response:
+  answer: answer
+  sources: metadata.retriever_resources
+  conversationId: conversation_id
+
+statusMapping: {}
+
+source:
+  id:
+    - segment_id
+    - document_id
+    - id
+  title:
+    - document_name
+    - dataset_name
+    - title
+  url: url
+  metadata: doc_metadata
+
+stream:
+  event: event
+  text: answer
+  conversationId: conversation_id
+  textEvents:
+    - message
+    - agent_message
+  terminalEvents:
+    - message_end
+  errorEvents:
+    - error
+  statusMapping:
+    workflow_started: Processing request
+    message: Preparing response
+    agent_message: Preparing response
+
+transport:
+  executeResponseMode: blocking

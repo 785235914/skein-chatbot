@@ -1,0 +1,23 @@
+{
+  "name": "@skein-chatbot/adapter-dify",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json"
+  },
+  "dependencies": {
+    "@skein-chatbot/contracts": "workspace:*",
+    "@skein-chatbot/core": "workspace:*",
+    "yaml": "^2.4.2",
+    "zod": "^3.25.76"
+  }
+}

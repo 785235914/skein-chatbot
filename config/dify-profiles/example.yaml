@@ -1,0 +1,65 @@
+# Generic example for an app that uses different variable and result names.
+# Copy this file to a local ignored profile; never put credentials in profiles.
+name: generic-example
+
+request:
+  query: prompt_copy
+  context: context_payload
+  conversation: conversation_context
+  workflowState: workflow_state
+  memory: memory_payload
+  mode: execution_mode
+  traceId: request_trace_id
+  turnId: request_turn_id
+  sessionId: runtime_session_id
+  metadata: request_metadata
+  user: requester_id
+
+modeMapping:
+  QUICK: WORKFLOW
+  DEEP: AGENT
+
+response:
+  answer: result.text
+  status: result.status
+  sources: result.references
+  followUpQuestion: result.follow_up.question
+  followUpGuidance: result.follow_up.guidance
+  conversationId: conversation_id
+  contextPatch:
+    conversation: result.context.conversation
+    workflowState: result.context.workflow_state
+
+statusMapping:
+  complete: ANSWER
+  partial: PARTIAL
+  no_evidence: NO_EVIDENCE
+  handoff: HANDOFF
+
+source:
+  id: reference_id
+  title: label
+  url: link
+  provider: origin
+  metadata: attributes
+
+stream:
+  event: event
+  text: payload.delta
+  conversationId: conversation_id
+  textEvents:
+    - message
+    - agent_message
+  terminalEvents:
+    - message_end
+  errorEvents:
+    - error
+  statusMapping:
+    workflow_started: Processing request
+    retrieval_started: Searching knowledge
+    response_started: Preparing response
+
+# Some Dify app modes accept only streaming requests. Set this to `streaming`
+# when blocking API calls should be fulfilled by collecting the SSE result.
+transport:
+  executeResponseMode: blocking
