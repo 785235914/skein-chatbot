@@ -9,6 +9,7 @@ import type {
 } from "@skein-chatbot/contracts";
 
 import { ApiClientError, createApiClient } from "./api.js";
+import { MarkdownMessage } from "./message-markdown.js";
 
 type LocalRole = "assistant" | "user";
 
@@ -395,7 +396,11 @@ function MessageCard({ message }: { message: LocalMessage }) {
       </div>
       <div className="message-body">
         {message.content.length > 0 ? (
-          <p>{message.content}</p>
+          message.role === "assistant" ? (
+            <MarkdownMessage content={message.content} />
+          ) : (
+            <p>{message.content}</p>
+          )
         ) : message.pending ? (
           <span className="typing" aria-label="Waiting for response">
             <i />
