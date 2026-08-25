@@ -2,6 +2,7 @@ import type {
   AbortSessionResponse,
   ChatResponse,
   MessageView,
+  ResumeSessionResponse,
   ResetSessionResponse,
   RuntimeEvent,
   SessionView,
@@ -17,7 +18,11 @@ import type {
   ContextValidationLimits,
 } from "../context/context.js";
 import { createContextValidator } from "../context/context-validator.js";
-import { RuntimeError, RuntimeErrorCode } from "../errors/runtime-error.js";
+import {
+  RuntimeError,
+  RuntimeErrorCode,
+  throwIfAborted,
+} from "../errors/runtime-error.js";
 import { MemoryContextBuilder } from "../memory/memory.js";
 import {
   DURABLE_PROVIDER_KEY_MAX_LENGTH,
@@ -26,9 +31,16 @@ import {
 import type { Clock } from "../ports/clock.js";
 import { NoopAuditPort, type AuditPort } from "../ports/audit.js";
 import type { CompactionProvider } from "../ports/compaction.js";
+import type { ConversationHistorySource } from "../ports/conversation-history.js";
 import type { IdGenerator } from "../ports/id-generator.js";
 import type { GuardPort } from "../ports/guard.js";
-import type { RuntimeStore } from "../ports/runtime-store.js";
+import type { ResumeTokenCodec, SessionResumeClaims } from "../ports/resume-token.js";
+import type {
+  CanonicalMessage,
+  ProviderConversationBinding,
+  RuntimeStore,
+  SessionAggregate,
+} from "../ports/runtime-store.js";
 import { NoopMetricsPort, type MetricsPort } from "../ports/metrics.js";
 import {
   NoopTelemetryPort,
@@ -46,6 +58,7 @@ import {
 import { ActiveTurnRegistry } from "./active-turn-registry.js";
 import { CryptoIdGenerator } from "./crypto-id-generator.js";
 import { SystemClock } from "./system-clock.js";
+import { createDefaultSkeinContext } from "./context-merge.js";
 import {
   isObservabilityPortFailure,
   RuntimeObserver,
@@ -55,6 +68,7 @@ import {
   TurnRunner,
   type RuntimeChatRequest,
 } from "./turn-runner.js";
+import type { RuntimeUserContext } from "./user-context.js";
 
 export interface ChatRuntimeDependencies {
   orchestrator: BusinessOrchestrator;
@@ -72,6 +86,8 @@ export interface ChatRuntimeDependencies {
   telemetry?: TelemetryPort;
   audit?: AuditPort;
   metrics?: MetricsPort;
+  resumeTokenCodec?: ResumeTokenCodec;
+  conversationHistorySource?: ConversationHistorySource;
 }
 
 const assertConfiguration = (dependencies: ChatRuntimeDependencies): void => {
@@ -95,7 +111,9 @@ const assertConfiguration = (dependencies: ChatRuntimeDependencies): void => {
     typeof config.guards !== "object" ||
     config.guards === null ||
     typeof config.guards.input !== "boolean" ||
-    typeof config.guards.output !== "boolean"
+    typeof config.guards.output !== "boolean" ||
+    (dependencies.resumeTokenCodec === undefined) !==
+      (dependencies.conversationHistorySource === undefined)
   ) {
     throw new RuntimeError(
       RuntimeErrorCode.VALIDATION_ERROR,
@@ -106,6 +124,10 @@ const assertConfiguration = (dependencies: ChatRuntimeDependencies): void => {
 
 export class ChatRuntime {
   private readonly activeTurns = new ActiveTurnRegistry();
+  private readonly activeResumes = new Map<
+    string,
+    Promise<ResumeSessionResponse>
+  >();
   private readonly clock: Clock;
   private readonly runner: TurnRunner;
 
@@ -174,6 +196,9 @@ export class ChatRuntime {
       inputGuard,
       outputGuard,
       observer,
+      ...(dependencies.resumeTokenCodec === undefined
+        ? {}
+        : { resumeTokenCodec: dependencies.resumeTokenCodec }),
     });
   }
 
@@ -189,6 +214,59 @@ export class ChatRuntime {
     signal?: AbortSignal,
   ): AsyncIterable<RuntimeEvent> {
     return this.runner.stream(request, signal);
+  }
+
+  async resumeSession(
+    resumeToken: string,
+    user: RuntimeUserContext,
+    signal?: AbortSignal,
+  ): Promise<ResumeSessionResponse> {
+    const codec = this.dependencies.resumeTokenCodec;
+    const historySource = this.dependencies.conversationHistorySource;
+    if (codec === undefined || historySource === undefined) {
+      throw new RuntimeError(
+        RuntimeErrorCode.VALIDATION_ERROR,
+        "Session resume is unavailable.",
+      );
+    }
+    let claims: SessionResumeClaims;
+    try {
+      claims = codec.decode(resumeToken);
+    } catch {
+      throw new RuntimeError(
+        RuntimeErrorCode.VALIDATION_ERROR,
+        "The session resume token is invalid.",
+      );
+    }
+    if (
+      claims.userId !== user.userId ||
+      claims.provider !== this.dependencies.provider ||
+      claims.providerKey !== this.dependencies.providerKey
+    ) {
+      throw new RuntimeError(
+        RuntimeErrorCode.SESSION_NOT_FOUND,
+        "The session was not found.",
+      );
+    }
+
+    const active = this.activeResumes.get(resumeToken);
+    if (active !== undefined) {
+      return active;
+    }
+    const operation = this.resumeDecodedSession(
+      claims,
+      codec,
+      historySource,
+      signal,
+    );
+    this.activeResumes.set(resumeToken, operation);
+    try {
+      return await operation;
+    } finally {
+      if (this.activeResumes.get(resumeToken) === operation) {
+        this.activeResumes.delete(resumeToken);
+      }
+    }
   }
 
   async getSession(sessionId: string): Promise<SessionView> {
@@ -253,6 +331,140 @@ export class ChatRuntime {
       sessionId,
       aborted: this.activeTurns.abort(sessionId),
     });
+  }
+
+  private async resumeDecodedSession(
+    claims: SessionResumeClaims,
+    codec: ResumeTokenCodec,
+    historySource: ConversationHistorySource,
+    signal?: AbortSignal,
+  ): Promise<ResumeSessionResponse> {
+    throwIfAborted(signal);
+    const existing = await this.dependencies.store.loadSessionAggregate(
+      claims.sessionId,
+    );
+    if (existing !== null) {
+      return this.responseForExistingResume(existing, claims, codec);
+    }
+
+    const history = await historySource.loadHistory(
+      {
+        externalConversationId: claims.externalConversationId,
+        userId: claims.userId,
+        maximumEntries: 200,
+      },
+      signal,
+    );
+    throwIfAborted(signal);
+    const messages: CanonicalMessage[] = history.flatMap((entry) => [
+      {
+        id: `history:${entry.id}:user`,
+        sessionId: claims.sessionId,
+        role: "USER" as const,
+        content: entry.userContent,
+        createdAt: entry.createdAt,
+      },
+      {
+        id: `history:${entry.id}:assistant`,
+        sessionId: claims.sessionId,
+        role: "ASSISTANT" as const,
+        content: entry.assistantContent,
+        createdAt: entry.createdAt,
+      },
+    ]);
+    const firstTimestamp = history[0]?.createdAt ?? claims.issuedAt;
+    const lastTimestamp = history.at(-1)?.createdAt ?? claims.issuedAt;
+    const session = {
+      id: claims.sessionId,
+      userId: claims.userId,
+      status: "ACTIVE" as const,
+      revision: 0,
+      createdAt: firstTimestamp,
+      updatedAt: lastTimestamp,
+      lastActiveAt: lastTimestamp,
+    };
+    const providerBinding: ProviderConversationBinding = {
+      sessionId: claims.sessionId,
+      provider: claims.provider,
+      providerKey: claims.providerKey,
+      externalConversationId: claims.externalConversationId,
+    };
+    const refreshedToken = this.encodeResumeToken(codec, claims);
+
+    try {
+      await this.dependencies.store.restoreSession({
+        session,
+        context: createDefaultSkeinContext(0),
+        messages,
+        providerBinding,
+      });
+    } catch (error) {
+      if (
+        error instanceof RuntimeError &&
+        error.code === RuntimeErrorCode.SESSION_CONFLICT
+      ) {
+        const raced = await this.dependencies.store.loadSessionAggregate(
+          claims.sessionId,
+        );
+        if (raced !== null) {
+          return this.responseForExistingResume(raced, claims, codec);
+        }
+      }
+      throw error;
+    }
+
+    return {
+      session: structuredClone(session),
+      messages: structuredClone(messages),
+      resumeToken: refreshedToken,
+    };
+  }
+
+  private async responseForExistingResume(
+    aggregate: SessionAggregate,
+    claims: SessionResumeClaims,
+    codec: ResumeTokenCodec,
+  ): Promise<ResumeSessionResponse> {
+    const binding = aggregate.providerBindings.find(
+      (candidate) =>
+        candidate.provider === claims.provider &&
+        candidate.providerKey === claims.providerKey,
+    );
+    if (
+      aggregate.session.userId !== claims.userId ||
+      aggregate.session.status !== "ACTIVE" ||
+      binding?.externalConversationId !== claims.externalConversationId
+    ) {
+      throw new RuntimeError(
+        RuntimeErrorCode.SESSION_NOT_FOUND,
+        "The session was not found.",
+      );
+    }
+    const messages = await this.dependencies.store.getMessages(
+      claims.sessionId,
+    );
+    return {
+      session: structuredClone(aggregate.session),
+      messages: structuredClone([...messages]),
+      resumeToken: this.encodeResumeToken(codec, claims),
+    };
+  }
+
+  private encodeResumeToken(
+    codec: ResumeTokenCodec,
+    claims: SessionResumeClaims,
+  ): string {
+    try {
+      return codec.encode({
+        ...claims,
+        issuedAt: this.clock.now().toISOString(),
+      });
+    } catch {
+      throw new RuntimeError(
+        RuntimeErrorCode.INTERNAL_ERROR,
+        "The session resume token could not be created.",
+      );
+    }
   }
 }
 

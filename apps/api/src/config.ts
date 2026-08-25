@@ -132,6 +132,7 @@ export interface MockApiConfig extends CommonApiConfig {
 
 export interface DifyApiConfig extends CommonApiConfig {
   orchestratorProvider: "dify";
+  sessionResumeSecret: Uint8Array;
   dify: {
     apiKey: string;
     baseUrl: string;
@@ -202,6 +203,7 @@ export const loadApiConfig = (
   return {
     ...common,
     orchestratorProvider: "dify",
+    sessionResumeSecret: parsed.SESSION_RESUME_SECRET,
     dify: {
       apiKey: parsed.DIFY_API_KEY,
       baseUrl: parsed.DIFY_BASE_URL,

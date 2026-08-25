@@ -71,6 +71,7 @@ describe("API Runtime composition", () => {
       status: "ANSWER",
       metadata: {},
     });
+    expect(response).not.toHaveProperty("resumeToken");
   });
 
   it("does not load PostgreSQL when DATABASE_URL is missing", async () => {
@@ -180,7 +181,9 @@ describe("API Runtime composition", () => {
       answer: "Dify composition answer",
       status: "ANSWER",
       metadata: {},
+      resumeToken: expect.any(String),
     });
+    expect(response.resumeToken).not.toContain("external-conversation");
     expect(JSON.stringify(response)).not.toContain(apiKey);
     expect(fetchMock).toHaveBeenCalledOnce();
     const [requestUrl, requestInit] = fetchMock.mock.calls[0] ?? [];

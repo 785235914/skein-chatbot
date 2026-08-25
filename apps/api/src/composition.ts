@@ -1,5 +1,6 @@
 import {
   createDifyBusinessOrchestrator,
+  createDifyConversationHistorySource,
   loadDifyProfile,
 } from "@skein-chatbot/adapter-dify";
 import { MockBusinessOrchestrator } from "@skein-chatbot/adapter-mock";
@@ -11,7 +12,9 @@ import {
   createReliableBusinessOrchestrator,
   type BusinessOrchestrator,
   type AuditPort,
+  type ConversationHistorySource,
   type MetricsPort,
+  type ResumeTokenCodec,
   type RuntimeStore,
   type TelemetryPort,
 } from "@skein-chatbot/core";
@@ -19,11 +22,14 @@ import { InMemoryRuntimeStore } from "@skein-chatbot/test-utils";
 
 import type { ApiRuntime } from "./api-runtime.js";
 import type { ApiConfig } from "./config.js";
+import { createEncryptedResumeTokenCodec } from "./session-resume-token.js";
 
 interface OrchestratorComposition {
+  conversationHistorySource?: ConversationHistorySource;
   orchestrator: BusinessOrchestrator;
   provider: "dify" | "mock";
   providerKey: string;
+  resumeTokenCodec?: ResumeTokenCodec;
 }
 
 export interface PostgresRuntimeStoreHandle {
@@ -105,18 +111,28 @@ const createOrchestrator = async (
       ? {}
       : { directory: config.dify.profileDirectory }),
   });
+  const providerFetch = globalThis.fetch;
   const orchestrator = createDifyBusinessOrchestrator({
     baseUrl: config.dify.baseUrl,
     apiKey: config.dify.apiKey,
     profile,
+    fetch: providerFetch,
     ...(config.providerKeyPrefix === undefined
       ? {}
       : { providerKey: config.providerKeyPrefix }),
   });
   return {
+    conversationHistorySource: createDifyConversationHistorySource({
+      baseUrl: config.dify.baseUrl,
+      apiKey: config.dify.apiKey,
+      fetch: providerFetch,
+    }),
     orchestrator,
     provider: "dify",
     providerKey: orchestrator.providerKey,
+    resumeTokenCodec: createEncryptedResumeTokenCodec(
+      config.sessionResumeSecret,
+    ),
   };
 };
 
@@ -163,6 +179,13 @@ export const createDefaultApiRuntime = async (
     config: config.runtime,
     provider: composition.provider,
     providerKey: composition.providerKey,
+    ...(composition.resumeTokenCodec === undefined
+      ? {}
+      : {
+          resumeTokenCodec: composition.resumeTokenCodec,
+          conversationHistorySource:
+            composition.conversationHistorySource,
+        }),
     ...(dependencies.observability ?? {}),
   });
   return persistence.close === undefined

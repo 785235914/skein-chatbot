@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ChatResponseSchema,
   PublicErrorSchema,
+  ResumeSessionResponseSchema,
   RuntimeEventSchema,
   type RuntimeEvent,
 } from "@skein-chatbot/contracts";
@@ -57,6 +58,20 @@ const completedResponse = {
   metadata: {},
 };
 
+const resumedResponse = {
+  session: {
+    id: "session-resumed",
+    userId: "demo-user",
+    status: "ACTIVE" as const,
+    revision: 0,
+    createdAt: "2026-08-25T00:00:00.000Z",
+    updatedAt: "2026-08-25T00:00:01.000Z",
+    lastActiveAt: "2026-08-25T00:00:01.000Z",
+  },
+  messages: [],
+  resumeToken: "refreshed-token",
+};
+
 const createRuntimeStub = (overrides: Partial<ApiRuntime> = {}): ApiRuntime => ({
   abortSession: (sessionId) => Promise.resolve({ sessionId, aborted: false }),
   chat: () => Promise.resolve(completedResponse),
@@ -73,6 +88,7 @@ const createRuntimeStub = (overrides: Partial<ApiRuntime> = {}): ApiRuntime => (
     }),
   resetSession: (sessionId) =>
     Promise.resolve({ sessionId, status: "RESET", revision: 2 }),
+  resumeSession: () => Promise.resolve(resumedResponse),
   stream: async function* () {
     yield { type: "turn.started" };
     yield { type: "turn.completed", result: completedResponse };
@@ -223,6 +239,106 @@ describe("health endpoints", () => {
 });
 
 describe("blocking chat and sessions", () => {
+  it("resumes a session with a strict body-only token envelope", async () => {
+    const resumeSession = vi.fn(
+      (_token: string, _user: { userId: string }, signal?: AbortSignal) => {
+        expect(signal).toBeInstanceOf(AbortSignal);
+        return Promise.resolve(resumedResponse);
+      },
+    );
+    const app = await createApiApp({
+      runtime: createRuntimeStub({ resumeSession }),
+    });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/sessions/resume",
+      payload: { resumeToken: "opaque-token" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(ResumeSessionResponseSchema.parse(response.json())).toEqual(
+      resumedResponse,
+    );
+    expect(resumeSession).toHaveBeenCalledOnce();
+    expect(resumeSession.mock.calls[0]?.slice(0, 2)).toEqual([
+      "opaque-token",
+      { userId: "demo-user" },
+    ]);
+  });
+
+  it("rejects malformed resume envelopes and never accepts tokens in a URL", async () => {
+    const resumeSession = vi.fn(() => Promise.resolve(resumedResponse));
+    const app = await createApiApp({
+      runtime: createRuntimeStub({ resumeSession }),
+    });
+    apps.push(app);
+
+    for (const payload of [
+      {},
+      { resumeToken: "" },
+      { resumeToken: "opaque", unexpected: true },
+    ]) {
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/v1/sessions/resume",
+        payload,
+      });
+      expect(response.statusCode).toBe(400);
+      expect(PublicErrorSchema.parse(response.json()).code).toBe(
+        "VALIDATION_ERROR",
+      );
+    }
+    const token = "url-token-must-not-be-accepted";
+    const queryResponse = await app.inject({
+      method: "POST",
+      url: `/api/v1/sessions/resume?resumeToken=${token}`,
+      payload: {},
+    });
+    expect(queryResponse.statusCode).toBe(400);
+    expect(queryResponse.body).not.toContain(token);
+    expect(resumeSession).not.toHaveBeenCalled();
+  });
+
+  it("validates resume output and hides token-bearing runtime failures", async () => {
+    const invalidOutputApp = await createApiApp({
+      runtime: createRuntimeStub({
+        resumeSession: () =>
+          Promise.resolve({ ...resumedResponse, resumeToken: "" }),
+      }),
+    });
+    apps.push(invalidOutputApp);
+    const invalidOutput = await invalidOutputApp.inject({
+      method: "POST",
+      url: "/api/v1/sessions/resume",
+      payload: { resumeToken: "opaque" },
+    });
+    expect(invalidOutput.statusCode).toBe(502);
+    expect(PublicErrorSchema.parse(invalidOutput.json()).code).toBe(
+      "PROVIDER_INVALID_RESPONSE",
+    );
+
+    const privateToken = "private-resume-token-must-not-leak";
+    const failingApp = await createApiApp({
+      runtime: createRuntimeStub({
+        resumeSession: () =>
+          Promise.reject(new Error(`failed for ${privateToken}`)),
+      }),
+    });
+    apps.push(failingApp);
+    const failure = await failingApp.inject({
+      method: "POST",
+      url: "/api/v1/sessions/resume",
+      payload: { resumeToken: privateToken },
+    });
+    expect(failure.statusCode).toBe(500);
+    expect(PublicErrorSchema.parse(failure.json()).code).toBe(
+      "INTERNAL_ERROR",
+    );
+    expect(failure.body).not.toContain(privateToken);
+  });
+
   it("creates a provider-neutral session and canonical response", async () => {
     const app = await createApiApp();
     apps.push(app);

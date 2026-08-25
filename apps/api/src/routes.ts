@@ -6,6 +6,8 @@ import {
   ChatResponseSchema,
   MessageViewSchema,
   ResetSessionResponseSchema,
+  ResumeSessionRequestSchema,
+  ResumeSessionResponseSchema,
   AbortSessionResponseSchema,
   RuntimeEventSchema,
   SessionViewSchema,
@@ -195,6 +197,30 @@ export const registerPublicRoutes = (
       return reply;
     }
     return streamChat(runtime, input, request, reply);
+  });
+
+  app.post("/api/v1/sessions/resume", async (request, reply) => {
+    const parsed = ResumeSessionRequestSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return sendPublicError(
+        reply,
+        createPublicError(
+          RuntimeErrorCode.VALIDATION_ERROR,
+          traceIdFor(request),
+        ),
+      );
+    }
+    const requestAbort = createRequestAbortContext(request, reply);
+    try {
+      const response = await runtime.resumeSession(
+        parsed.data.resumeToken,
+        DEFAULT_USER,
+        requestAbort.signal,
+      );
+      return assertRuntimeOutput(ResumeSessionResponseSchema, response);
+    } finally {
+      requestAbort.dispose();
+    }
   });
 
   app.get("/api/v1/sessions/:sessionId", async (request, reply) => {

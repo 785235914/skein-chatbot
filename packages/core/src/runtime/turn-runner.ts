@@ -30,6 +30,7 @@ import type {
 import type { Clock } from "../ports/clock.js";
 import type { IdGenerator } from "../ports/id-generator.js";
 import type { GuardPort, GuardResult } from "../ports/guard.js";
+import type { ResumeTokenCodec } from "../ports/resume-token.js";
 import type {
   FailedTurnCommand,
   ProviderConversationBinding,
@@ -76,6 +77,7 @@ export interface TurnRunnerDependencies {
   inputGuard: GuardPort;
   outputGuard: GuardPort;
   observer: RuntimeObserver;
+  resumeTokenCodec?: ResumeTokenCodec;
 }
 
 interface TurnIdentity {
@@ -771,16 +773,6 @@ export class TurnRunner {
       completedAt,
       this.dependencies.contextValidator,
     );
-    const response: ChatResponse = {
-      sessionId: prepared.sessionId,
-      turnId: prepared.turnId,
-      answer: result.answer,
-      status: result.status,
-      sources: structuredClone(result.sources),
-      followUpQuestion: result.followUpQuestion ?? "",
-      followUpGuidance: result.followUpGuidance ?? "",
-      metadata: {},
-    };
     let providerBinding: ProviderConversationBinding | undefined;
     if (result.providerConversationId !== undefined) {
       providerBinding = {
@@ -790,6 +782,39 @@ export class TurnRunner {
         externalConversationId: result.providerConversationId,
       };
     }
+    let resumeToken: string | undefined;
+    if (
+      providerBinding !== undefined &&
+      this.dependencies.resumeTokenCodec !== undefined
+    ) {
+      try {
+        resumeToken = this.dependencies.resumeTokenCodec.encode({
+          version: 1,
+          sessionId: prepared.sessionId,
+          userId: prepared.request.user.userId,
+          provider: this.dependencies.provider,
+          providerKey: this.dependencies.providerKey,
+          externalConversationId: providerBinding.externalConversationId,
+          issuedAt: completedAt,
+        });
+      } catch {
+        throw new RuntimeError(
+          RuntimeErrorCode.INTERNAL_ERROR,
+          "The session resume token could not be created.",
+        );
+      }
+    }
+    const response: ChatResponse = {
+      sessionId: prepared.sessionId,
+      turnId: prepared.turnId,
+      answer: result.answer,
+      status: result.status,
+      sources: structuredClone(result.sources),
+      followUpQuestion: result.followUpQuestion ?? "",
+      followUpGuidance: result.followUpGuidance ?? "",
+      metadata: {},
+      ...(resumeToken === undefined ? {} : { resumeToken }),
+    };
 
     // commitTurn is the irreversible boundary: no abort check may run after it
     // begins because the store port intentionally has no rollback contract.

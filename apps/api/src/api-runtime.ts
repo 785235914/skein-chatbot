@@ -2,11 +2,15 @@ import type {
   AbortSessionResponse,
   ChatResponse,
   MessageView,
+  ResumeSessionResponse,
   ResetSessionResponse,
   RuntimeEvent,
   SessionView,
 } from "@skein-chatbot/contracts";
-import type { RuntimeChatRequest } from "@skein-chatbot/core";
+import type {
+  RuntimeChatRequest,
+  RuntimeUserContext,
+} from "@skein-chatbot/core";
 
 export type ApiChatInput = RuntimeChatRequest;
 
@@ -21,5 +25,10 @@ export interface ApiRuntime {
   getMessages(sessionId: string): Promise<readonly MessageView[]>;
   getSession(sessionId: string): Promise<SessionView>;
   resetSession(sessionId: string): Promise<ResetSessionResponse>;
+  resumeSession(
+    resumeToken: string,
+    user: RuntimeUserContext,
+    signal?: AbortSignal,
+  ): Promise<ResumeSessionResponse>;
   stream(input: ApiChatInput, signal?: AbortSignal): AsyncIterable<RuntimeEvent>;
 }

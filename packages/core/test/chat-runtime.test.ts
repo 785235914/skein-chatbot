@@ -14,9 +14,12 @@ import {
   RuntimeErrorCode,
   normalizeContextPatch,
   type BusinessOrchestrator,
+  type ConversationHistorySource,
   type OrchestrationEvent,
   type OrchestrationInput,
   type OrchestrationResult,
+  type ResumeTokenCodec,
+  type SessionResumeClaims,
 } from "../src/index.js";
 
 type ExecuteHandler = (
@@ -92,6 +95,90 @@ const collectEvents = async (
     collected.push(event);
   }
   return collected;
+};
+
+class RecordingResumeTokenCodec implements ResumeTokenCodec {
+  readonly claims = new Map<string, SessionResumeClaims>();
+  failEncoding = false;
+  private nextToken = 1;
+
+  encode(claims: SessionResumeClaims): string {
+    if (this.failEncoding) {
+      throw new Error("resume codec failure");
+    }
+    const token = `opaque-token-${this.nextToken}`;
+    this.nextToken += 1;
+    this.claims.set(token, structuredClone(claims));
+    return token;
+  }
+
+  decode(token: string): SessionResumeClaims {
+    const claims = this.claims.get(token);
+    if (claims === undefined) {
+      throw new Error("invalid token");
+    }
+    return structuredClone(claims);
+  }
+
+  seed(token: string, claims: SessionResumeClaims): void {
+    this.claims.set(token, structuredClone(claims));
+  }
+}
+
+const resumeClaims = (
+  overrides: Partial<SessionResumeClaims> = {},
+): SessionResumeClaims => ({
+  version: 1,
+  sessionId: "restored-session",
+  userId: "user-1",
+  provider: "provider",
+  providerKey: "default",
+  externalConversationId: "external-conversation",
+  issuedAt: "2026-08-25T00:00:00.000Z",
+  ...overrides,
+});
+
+const historySource = (
+  loadHistory: ConversationHistorySource["loadHistory"] = () =>
+    Promise.resolve([
+      {
+        id: "entry-1",
+        userContent: "Earlier question",
+        assistantContent: "Earlier answer",
+        createdAt: "2026-08-25T00:00:01.000Z",
+      },
+    ]),
+): ConversationHistorySource => ({ loadHistory });
+
+const resumableRuntime = (
+  options: {
+    codec?: RecordingResumeTokenCodec;
+    history?: ConversationHistorySource;
+    orchestrator?: BusinessOrchestrator;
+    store?: InMemoryRuntimeStore;
+  } = {},
+): {
+  codec: RecordingResumeTokenCodec;
+  runtime: ChatRuntime;
+  store: InMemoryRuntimeStore;
+} => {
+  const codec = options.codec ?? new RecordingResumeTokenCodec();
+  const store = options.store ?? new InMemoryRuntimeStore();
+  return {
+    codec,
+    store,
+    runtime: new ChatRuntime({
+      orchestrator: options.orchestrator ?? new ScriptedOrchestrator(),
+      store,
+      config: DEFAULT_RUNTIME_CONFIG,
+      provider: "provider",
+      providerKey: "default",
+      clock: new ManualClock("2026-08-25T00:01:00.000Z"),
+      idGenerator: new SequenceIdGenerator(),
+      resumeTokenCodec: codec,
+      conversationHistorySource: options.history ?? historySource(),
+    }),
+  };
 };
 
 describe("ChatRuntime blocking turns", () => {
@@ -493,5 +580,241 @@ describe("ChatRuntime durable provider identity", () => {
         message: "The runtime configuration is invalid.",
       }),
     );
+  });
+});
+
+describe("ChatRuntime session resume", () => {
+  it("issues opaque resume tokens for blocking and streaming provider bindings", async () => {
+    const orchestrator = new ScriptedOrchestrator(
+      () =>
+        Promise.resolve({
+          ...defaultResult(),
+          providerConversationId: "external-conversation",
+        }),
+      async function* () {
+        yield {
+          type: "completed",
+          result: {
+            ...defaultResult(),
+            providerConversationId: "external-conversation",
+          },
+        };
+      },
+    );
+    const { runtime, codec } = resumableRuntime({ orchestrator });
+
+    const blocking = await runtime.chat({
+      sessionId: "blocking-session",
+      message: "Blocking",
+      user: { userId: "user-1" },
+    });
+    const streamed = await collectEvents(
+      runtime.stream({
+        sessionId: "streaming-session",
+        message: "Streaming",
+        user: { userId: "user-1" },
+      }),
+    );
+    const terminal = streamed.at(-1);
+
+    expect(blocking.resumeToken).toBeDefined();
+    expect(codec.decode(blocking.resumeToken ?? "")).toMatchObject({
+      sessionId: "blocking-session",
+      userId: "user-1",
+      provider: "provider",
+      providerKey: "default",
+      externalConversationId: "external-conversation",
+    });
+    expect(terminal).toMatchObject({
+      type: "turn.completed",
+      result: { resumeToken: expect.stringMatching(/^opaque-token-/u) },
+    });
+  });
+
+  it("keeps chat compatible when resume capability is absent", async () => {
+    const { runtime } = createRuntime(
+      new ScriptedOrchestrator(() =>
+        Promise.resolve({
+          ...defaultResult(),
+          providerConversationId: "external-conversation",
+        }),
+      ),
+    );
+
+    await expect(
+      runtime.chat({ message: "No resume", user: { userId: "user-1" } }),
+    ).resolves.not.toHaveProperty("resumeToken");
+  });
+
+  it("does not commit a turn when token creation fails", async () => {
+    const codec = new RecordingResumeTokenCodec();
+    codec.failEncoding = true;
+    const { runtime, store } = resumableRuntime({
+      codec,
+      orchestrator: new ScriptedOrchestrator(() =>
+        Promise.resolve({
+          ...defaultResult(),
+          providerConversationId: "external-conversation",
+        }),
+      ),
+    });
+
+    await expect(
+      runtime.chat({
+        sessionId: "failed-token-session",
+        message: "Do not commit",
+        user: { userId: "user-1" },
+      }),
+    ).rejects.toMatchObject({ code: RuntimeErrorCode.INTERNAL_ERROR });
+    expect(await store.getSession("failed-token-session")).toBeNull();
+    expect(await store.getMessages("failed-token-session")).toEqual([]);
+  });
+
+  it("restores canonical history and continues the original provider conversation", async () => {
+    const codec = new RecordingResumeTokenCodec();
+    codec.seed("resume-me", resumeClaims());
+    const orchestrator = new ScriptedOrchestrator((input) =>
+      Promise.resolve({
+        ...defaultResult(),
+        providerConversationId:
+          input.providerConversationId ?? "external-conversation",
+      }),
+    );
+    const { runtime } = resumableRuntime({ codec, orchestrator });
+
+    const restored = await runtime.resumeSession(
+      "resume-me",
+      { userId: "user-1" },
+    );
+    expect(restored).toMatchObject({
+      session: { id: "restored-session", revision: 0, status: "ACTIVE" },
+      messages: [
+        {
+          id: "history:entry-1:user",
+          role: "USER",
+          content: "Earlier question",
+        },
+        {
+          id: "history:entry-1:assistant",
+          role: "ASSISTANT",
+          content: "Earlier answer",
+        },
+      ],
+      resumeToken: expect.stringMatching(/^opaque-token-/u),
+    });
+
+    await runtime.chat({
+      sessionId: "restored-session",
+      message: "Continue",
+      user: { userId: "user-1" },
+    });
+    expect(orchestrator.inputs.at(-1)?.providerConversationId).toBe(
+      "external-conversation",
+    );
+  });
+
+  it("returns an existing matching session without reloading provider history", async () => {
+    let historyCalls = 0;
+    const codec = new RecordingResumeTokenCodec();
+    const { runtime } = resumableRuntime({
+      codec,
+      history: historySource(() => {
+        historyCalls += 1;
+        return Promise.resolve([]);
+      }),
+      orchestrator: new ScriptedOrchestrator(() =>
+        Promise.resolve({
+          ...defaultResult(),
+          providerConversationId: "external-conversation",
+        }),
+      ),
+    });
+    const chat = await runtime.chat({
+      sessionId: "existing-session",
+      message: "Existing",
+      user: { userId: "user-1" },
+    });
+
+    const resumed = await runtime.resumeSession(
+      chat.resumeToken ?? "",
+      { userId: "user-1" },
+    );
+
+    expect(resumed.session.revision).toBe(1);
+    expect(resumed.messages).toHaveLength(2);
+    expect(resumed.resumeToken).not.toBe(chat.resumeToken);
+    expect(historyCalls).toBe(0);
+  });
+
+  it.each([
+    ["user", { userId: "other-user" }],
+    ["provider", { provider: "other-provider" }],
+    ["provider key", { providerKey: "other-profile" }],
+  ])("rejects a %s claim mismatch before history access", async (_label, mismatch) => {
+    let historyCalls = 0;
+    const codec = new RecordingResumeTokenCodec();
+    codec.seed("mismatch", resumeClaims(mismatch));
+    const { runtime, store } = resumableRuntime({
+      codec,
+      history: historySource(() => {
+        historyCalls += 1;
+        return Promise.resolve([]);
+      }),
+    });
+
+    await expect(
+      runtime.resumeSession("mismatch", { userId: "user-1" }),
+    ).rejects.toMatchObject({ code: RuntimeErrorCode.SESSION_NOT_FOUND });
+    expect(historyCalls).toBe(0);
+    expect(await store.getSession("restored-session")).toBeNull();
+  });
+
+  it("leaves the store unchanged when provider history fails", async () => {
+    const codec = new RecordingResumeTokenCodec();
+    codec.seed("history-failure", resumeClaims());
+    const providerFailure = new RuntimeError(
+      RuntimeErrorCode.PROVIDER_UNAVAILABLE,
+      "History unavailable.",
+    );
+    const { runtime, store } = resumableRuntime({
+      codec,
+      history: historySource(() => Promise.reject(providerFailure)),
+    });
+
+    await expect(
+      runtime.resumeSession("history-failure", { userId: "user-1" }),
+    ).rejects.toBe(providerFailure);
+    expect(await store.getSession("restored-session")).toBeNull();
+    expect(await store.getMessages("restored-session")).toEqual([]);
+  });
+
+  it("coalesces concurrent identical resume requests", async () => {
+    const codec = new RecordingResumeTokenCodec();
+    codec.seed("concurrent", resumeClaims());
+    let historyCalls = 0;
+    let release = (): void => undefined;
+    const barrier = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { runtime } = resumableRuntime({
+      codec,
+      history: historySource(async () => {
+        historyCalls += 1;
+        await barrier;
+        return historySource().loadHistory({
+          externalConversationId: "external-conversation",
+          userId: "user-1",
+          maximumEntries: 200,
+        });
+      }),
+    });
+
+    const first = runtime.resumeSession("concurrent", { userId: "user-1" });
+    const second = runtime.resumeSession("concurrent", { userId: "user-1" });
+    release();
+
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+    expect(firstResult).toEqual(secondResult);
+    expect(historyCalls).toBe(1);
   });
 });
