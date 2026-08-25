@@ -119,6 +119,14 @@ export interface DifyBusinessOrchestratorOptions {
   files?: DifyFilesProvider;
 }
 
+export interface DifyConversationHistoryOptions {
+  baseUrl: string;
+  apiKey: string;
+  fetch?: DifyFetch;
+  pageSize?: number;
+  maximumResponseBytes?: number;
+}
+
 export interface LoadDifyProfileOptions {
   name: string;
   directory?: string;
