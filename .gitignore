@@ -16,3 +16,4 @@ prisma/*.db-journal
 
 tmp/
 .tmp/
+.worktrees/
