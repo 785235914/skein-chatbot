@@ -1,12 +1,14 @@
 import {
   ChatResponseSchema,
   PublicErrorSchema,
+  ResumeSessionResponseSchema,
   RuntimeEventSchema,
 } from "@skein-chatbot/contracts";
 import type {
   ChatRequest,
   ChatResponse,
   PublicError,
+  ResumeSessionResponse,
   RuntimeEvent,
 } from "@skein-chatbot/contracts";
 
@@ -143,6 +145,10 @@ export const parseRuntimeEventBlock = (
 
 export interface SkeinApiClient {
   chat(request: ChatRequest, signal?: AbortSignal): Promise<ChatResponse>;
+  resumeSession(
+    resumeToken: string,
+    signal?: AbortSignal,
+  ): Promise<ResumeSessionResponse>;
   streamChat(
     request: ChatRequest,
     signal?: AbortSignal,
@@ -171,6 +177,21 @@ export const createApiClient = (
 
       await assertSuccessfulResponse(response);
       return parseChatResponse(await response.json());
+    },
+
+    async resumeSession(resumeToken, signal) {
+      const response = await fetchImplementation(
+        `${baseUrl}/api/v1/sessions/resume`,
+        {
+          body: JSON.stringify({ resumeToken }),
+          headers: JSON_HEADERS,
+          method: "POST",
+          ...(signal === undefined ? {} : { signal }),
+        },
+      );
+
+      await assertSuccessfulResponse(response);
+      return parseResumeResponse(await response.json());
     },
 
     async *streamChat(request, signal) {
@@ -231,6 +252,17 @@ const parseChatResponse = (payload: unknown): ChatResponse => {
     throw new ApiClientError("The server returned an invalid chat response.", {
       cause: parsed.error,
     });
+  }
+  return parsed.data;
+};
+
+const parseResumeResponse = (payload: unknown): ResumeSessionResponse => {
+  const parsed = ResumeSessionResponseSchema.safeParse(payload);
+  if (!parsed.success) {
+    throw new ApiClientError(
+      "The server returned an invalid resume response.",
+      { cause: parsed.error },
+    );
   }
   return parsed.data;
 };

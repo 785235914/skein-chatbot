@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type {
   ChatRequest,
   ChatResponse,
+  ResumeSessionResponse,
   RuntimeEvent,
 } from "@skein-chatbot/contracts";
 
@@ -21,6 +22,28 @@ const responsePayload: ChatResponse = {
   sources: [],
   status: "ANSWER",
   turnId: "turn-1",
+};
+
+const resumeResponsePayload: ResumeSessionResponse = {
+  session: {
+    id: "session-1",
+    userId: "demo-user",
+    status: "ACTIVE",
+    revision: 0,
+    createdAt: "2026-08-25T00:00:00.000Z",
+    updatedAt: "2026-08-25T00:00:01.000Z",
+    lastActiveAt: "2026-08-25T00:00:01.000Z",
+  },
+  messages: [
+    {
+      id: "message-1",
+      sessionId: "session-1",
+      role: "USER",
+      content: "Earlier question",
+      createdAt: "2026-08-25T00:00:00.000Z",
+    },
+  ],
+  resumeToken: "refreshed-token",
 };
 
 describe("RuntimeEventStreamParser", () => {
@@ -59,6 +82,84 @@ describe("RuntimeEventStreamParser", () => {
 });
 
 describe("createApiClient", () => {
+  it("sends resume tokens only in the strict POST body and validates the response", async () => {
+    let observedUrl = "";
+    let observedRequest: RequestInit | undefined;
+    const fetchImplementation: typeof fetch = async (input, init) => {
+      observedUrl = String(input);
+      observedRequest = init;
+      return new Response(JSON.stringify(resumeResponsePayload), {
+        headers: { "Content-Type": "application/json" },
+        status: 200,
+      });
+    };
+    const client = createApiClient({
+      baseUrl: "https://example.com/",
+      fetchImplementation,
+    });
+
+    await expect(client.resumeSession("opaque-token")).resolves.toEqual(
+      resumeResponsePayload,
+    );
+    expect(observedUrl).toBe("https://example.com/api/v1/sessions/resume");
+    expect(observedUrl).not.toContain("opaque-token");
+    expect(observedRequest?.method).toBe("POST");
+    expect(new Headers(observedRequest?.headers).get("content-type")).toBe(
+      "application/json",
+    );
+    expect(JSON.parse(String(observedRequest?.body))).toEqual({
+      resumeToken: "opaque-token",
+    });
+  });
+
+  it("rejects malformed resume responses", async () => {
+    const fetchImplementation: typeof fetch = async () =>
+      new Response(
+        JSON.stringify({ ...resumeResponsePayload, resumeToken: "" }),
+        { headers: { "Content-Type": "application/json" }, status: 200 },
+      );
+    const client = createApiClient({ fetchImplementation });
+
+    await expect(client.resumeSession("opaque-token")).rejects.toMatchObject({
+      name: "ApiClientError",
+      message: "The server returned an invalid resume response.",
+    });
+  });
+
+  it("maps resume public errors and forwards abort signals", async () => {
+    const publicError = {
+      code: "SESSION_NOT_FOUND",
+      message: "The session was not found.",
+      retryable: false,
+      traceId: "trace-resume",
+    } as const;
+    const publicErrorClient = createApiClient({
+      fetchImplementation: async () =>
+        new Response(JSON.stringify(publicError), {
+          headers: { "Content-Type": "application/json" },
+          status: 404,
+        }),
+    });
+    await expect(
+      publicErrorClient.resumeSession("opaque-token"),
+    ).rejects.toMatchObject({
+      publicError,
+      status: 404,
+    });
+
+    const controller = new AbortController();
+    const abortClient = createApiClient({
+      fetchImplementation: async (_input, init) => {
+        expect(init?.signal).toBe(controller.signal);
+        throw new DOMException("Aborted", "AbortError");
+      },
+    });
+    controller.abort();
+    await expect(
+      abortClient.resumeSession("opaque-token", controller.signal),
+    ).rejects.toMatchObject({ name: "AbortError" });
+  });
+
   it("maps blocking chat calls to the public REST endpoint", async () => {
     let observedUrl = "";
     let observedRequest: RequestInit | undefined;
