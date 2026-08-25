@@ -15,6 +15,8 @@ import { RuntimeErrorCode } from "@skein-chatbot/core";
 import { createDefaultApiRuntime } from "../src/composition.js";
 import { loadApiConfig } from "../src/config.js";
 
+const sessionResumeSecret = Buffer.alloc(32, 5).toString("base64");
+
 const temporaryDirectories: string[] = [];
 
 afterEach(async () => {
@@ -165,6 +167,7 @@ describe("API Runtime composition", () => {
       DIFY_API_KEY: apiKey,
       DIFY_PROFILE: "finance",
       DIFY_PROFILE_DIRECTORY: directory,
+      SESSION_RESUME_SECRET: sessionResumeSecret,
     });
     const runtime = await createDefaultApiRuntime(config);
     const response = await runtime.chat({
@@ -228,6 +231,7 @@ describe("API Runtime composition", () => {
       DIFY_PROFILE: "long-profile",
       DIFY_PROFILE_DIRECTORY: directory,
       DATABASE_URL: databaseUrl,
+      SESSION_RESUME_SECRET: sessionResumeSecret,
     });
 
     let captured: unknown;
@@ -290,6 +294,7 @@ describe("API Runtime composition", () => {
         DIFY_PROFILE: "finance",
         DIFY_PROFILE_DIRECTORY: directory,
         RETRY_ATTEMPTS: "2",
+        SESSION_RESUME_SECRET: sessionResumeSecret,
       }),
     );
     const response = await runtime.chat({
@@ -316,6 +321,7 @@ describe("API Runtime composition", () => {
       DIFY_API_KEY: apiKey,
       DIFY_PROFILE: "missing",
       DIFY_PROFILE_DIRECTORY: directory,
+      SESSION_RESUME_SECRET: sessionResumeSecret,
     });
 
     let captured: unknown;

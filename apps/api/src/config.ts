@@ -19,6 +19,27 @@ const OptionalDatabaseUrlSchema = z
     value === undefined || value.trim().length === 0 ? undefined : value,
   );
 const ProviderKeySchema = z.string().trim().min(1).max(128);
+const SessionResumeSecretSchema = z
+  .string()
+  .min(1)
+  .transform((value, context): Uint8Array => {
+    if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(value)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "SESSION_RESUME_SECRET must be strict Base64.",
+      });
+      return z.NEVER;
+    }
+    const decoded = Buffer.from(value, "base64");
+    if (decoded.toString("base64") !== value || decoded.byteLength !== 32) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "SESSION_RESUME_SECRET must decode to exactly 32 bytes.",
+      });
+      return z.NEVER;
+    }
+    return new Uint8Array(decoded);
+  });
 const PinoLogLevelSchema = z.enum(PINO_LOG_LEVELS);
 const ProfileNameSchema = z
   .string()
@@ -61,6 +82,7 @@ const CommonEnvironmentShape = {
   RETRY_ATTEMPTS: NonNegativeIntegerSchema.max(10).default(1),
   ENABLE_INPUT_GUARD: BooleanEnvironmentValueSchema.default("true"),
   ENABLE_OUTPUT_GUARD: BooleanEnvironmentValueSchema.default("true"),
+  SESSION_RESUME_SECRET: SessionResumeSecretSchema.optional(),
 } as const;
 
 const MockEnvironmentSchema = z.object({
@@ -81,6 +103,7 @@ const DifyEnvironmentSchema = z.object({
     .refine((value) => value.trim().length > 0, "DIFY_API_KEY is required."),
   DIFY_PROFILE: ProfileNameSchema,
   DIFY_PROFILE_DIRECTORY: z.string().min(1).optional(),
+  SESSION_RESUME_SECRET: SessionResumeSecretSchema,
 });
 
 const EnvironmentSchema = z.discriminatedUnion("ORCHESTRATOR_PROVIDER", [
@@ -95,6 +118,7 @@ interface CommonApiConfig {
   persistence: ApiPersistenceConfig;
   port: number;
   runtime: RuntimeConfig;
+  sessionResumeSecret?: Uint8Array;
 }
 
 export type ApiPersistenceConfig =
@@ -162,6 +186,9 @@ export const loadApiConfig = (
     persistence: persistenceConfigFrom(parsed.DATABASE_URL),
     port: parsed.PORT,
     runtime: runtimeConfigFrom(parsed),
+    ...(parsed.SESSION_RESUME_SECRET === undefined
+      ? {}
+      : { sessionResumeSecret: parsed.SESSION_RESUME_SECRET }),
   };
 
   if (parsed.ORCHESTRATOR_PROVIDER === "mock") {

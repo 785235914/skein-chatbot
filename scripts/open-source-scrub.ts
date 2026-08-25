@@ -93,7 +93,12 @@ const containsCredentialAssignment = (line: string): boolean => {
     return false;
   }
   const value = rawValue.replace(/^['"]|['"]$/gu, "").trim();
-  return value.length > 0 && !/^(?:example|placeholder|replace-me)$/iu.test(value);
+  return (
+    value.length > 0 &&
+    !/^(?:example|placeholder|replace-me|replace-with-base64-32-byte-key)$/iu.test(
+      value,
+    )
+  );
 };
 
 const addMatches = (

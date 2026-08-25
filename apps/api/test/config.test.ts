@@ -3,6 +3,8 @@ import { ZodError } from "zod";
 
 import { loadApiConfig } from "../src/config.js";
 
+const sessionResumeSecret = Buffer.alloc(32, 7).toString("base64");
+
 describe("API environment configuration", () => {
   it("provides a fully validated provider-free Runtime configuration", () => {
     expect(loadApiConfig({})).toEqual({
@@ -96,6 +98,7 @@ describe("API environment configuration", () => {
       DIFY_API_KEY: "test-app-key",
       DIFY_PROFILE: "finance",
       DIFY_PROFILE_DIRECTORY: "C:\\profiles",
+      SESSION_RESUME_SECRET: sessionResumeSecret,
     });
 
     expect(config.orchestratorProvider).toBe("dify");
@@ -109,9 +112,15 @@ describe("API environment configuration", () => {
       profileDirectory: "C:\\profiles",
     });
     expect(config.providerKeyPrefix).toBe("tenant-a");
+    expect(config.sessionResumeSecret).toEqual(new Uint8Array(32).fill(7));
   });
 
-  it.each(["DIFY_BASE_URL", "DIFY_API_KEY", "DIFY_PROFILE"] as const)(
+  it.each([
+    "DIFY_BASE_URL",
+    "DIFY_API_KEY",
+    "DIFY_PROFILE",
+    "SESSION_RESUME_SECRET",
+  ] as const)(
     "requires %s when the Dify provider is selected",
     (missingName) => {
       const environment: NodeJS.ProcessEnv = {
@@ -119,6 +128,7 @@ describe("API environment configuration", () => {
         DIFY_BASE_URL: "https://api.example.com/v1",
         DIFY_API_KEY: "test-app-key",
         DIFY_PROFILE: "default",
+        SESSION_RESUME_SECRET: sessionResumeSecret,
       };
       delete environment[missingName];
       expect(() => loadApiConfig(environment)).toThrow();
@@ -134,6 +144,7 @@ describe("API environment configuration", () => {
         DIFY_BASE_URL: "not-a-url",
         DIFY_API_KEY: secret,
         DIFY_PROFILE: "default",
+        SESSION_RESUME_SECRET: sessionResumeSecret,
       });
     } catch (error) {
       captured = error;
@@ -142,6 +153,27 @@ describe("API environment configuration", () => {
     expect(captured).toBeDefined();
     expect(captured).toBeInstanceOf(ZodError);
     expect(String(captured)).not.toContain(secret);
+  });
+
+  it("accepts an optional Mock resume secret but rejects malformed secret material", () => {
+    const mock = loadApiConfig({ SESSION_RESUME_SECRET: sessionResumeSecret });
+    expect(mock.sessionResumeSecret).toEqual(new Uint8Array(32).fill(7));
+
+    for (const invalid of ["not-base64!", Buffer.alloc(31).toString("base64")]) {
+      expect(() =>
+        loadApiConfig({ SESSION_RESUME_SECRET: invalid }),
+      ).toThrow("SESSION_RESUME_SECRET");
+    }
+
+    const credentialLikeValue = Buffer.alloc(31, 9).toString("base64");
+    let captured: unknown;
+    try {
+      loadApiConfig({ SESSION_RESUME_SECRET: credentialLikeValue });
+    } catch (error) {
+      captured = error;
+    }
+    expect(captured).toBeDefined();
+    expect(String(captured)).not.toContain(credentialLikeValue);
   });
 
   it("never includes a database URL or password in unrelated validation errors", () => {

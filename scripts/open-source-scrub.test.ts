@@ -68,6 +68,27 @@ describe("scanPublicFiles", () => {
     expect(result).toEqual([]);
   });
 
+  it("allows only the documented resume-secret placeholder", () => {
+    expect(
+      scanPublicFiles([
+        file(
+          ".env.example",
+          "SESSION_RESUME_SECRET=replace-with-base64-32-byte-key",
+        ),
+      ]),
+    ).toEqual([]);
+    expect(
+      scanPublicFiles([
+        file(
+          ".env.example",
+          "SESSION_RESUME_SECRET=replace-with-base64-32-byte-key-extra",
+        ),
+      ]),
+    ).toEqual([
+      { line: 1, path: ".env.example", rule: "ENV_CREDENTIAL" },
+    ]);
+  });
+
   it("reports every required rule family in stable path-line-rule order", () => {
     const company = joined("ze", "iss");
     const localPath = joined("C:", "\\", "Users", "\\", "person", "\\", "checkout");
