@@ -65,9 +65,17 @@ export const ChatResponseSchema = z
     followUpQuestion: z.string(),
     followUpGuidance: z.string(),
     metadata: JsonObjectSchema,
+    resumeToken: z.string().min(1).max(8_192).optional(),
   })
   .strict();
 export type ChatResponse = z.infer<typeof ChatResponseSchema>;
+
+export const ResumeSessionRequestSchema = z
+  .object({
+    resumeToken: z.string().min(1).max(8_192),
+  })
+  .strict();
+export type ResumeSessionRequest = z.infer<typeof ResumeSessionRequestSchema>;
 
 export const RuntimeErrorCodeSchema = z.enum([
   "VALIDATION_ERROR",
@@ -127,6 +135,17 @@ export const SessionViewSchema = z
   })
   .strict();
 export type SessionView = z.infer<typeof SessionViewSchema>;
+
+export const ResumeSessionResponseSchema = z
+  .object({
+    session: SessionViewSchema,
+    messages: z.array(MessageViewSchema),
+    resumeToken: z.string().min(1).max(8_192),
+  })
+  .strict();
+export type ResumeSessionResponse = z.infer<
+  typeof ResumeSessionResponseSchema
+>;
 
 export const ResetSessionResponseSchema = z
   .object({

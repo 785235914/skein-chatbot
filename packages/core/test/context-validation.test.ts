@@ -22,6 +22,7 @@ import {
   type FailedTurnCommand,
   type OrchestrationResult,
   type ResetSessionCommand,
+  type RestoreSessionCommand,
   type RuntimeSession,
   type RuntimeStore,
   type SessionAggregate,
@@ -76,6 +77,10 @@ class AggregateFixtureStore implements RuntimeStore {
     return Promise.resolve(
       sessionId === this.aggregate.session.id ? this.aggregate : null,
     );
+  }
+
+  restoreSession(_command: RestoreSessionCommand): Promise<RuntimeSession> {
+    return Promise.reject(new Error("restoreSession must not be called"));
   }
 
   commitTurn(command: CommitTurnCommand): Promise<CommitTurnResult> {

@@ -11,8 +11,12 @@ import {
   type IdGenerator,
   type OrchestrationInput,
   type OrchestrationResult,
+  type ConversationHistorySource,
+  type RestoreSessionCommand,
+  type ResumeTokenCodec,
   type RuntimeConfig,
   type RuntimeStore,
+  type SessionResumeClaims,
   type TelemetryEvent,
   type TelemetryPort,
   type TurnSnapshotInput,
@@ -144,6 +148,7 @@ describe("core contracts", () => {
     };
     const store: RuntimeStore = {
       loadSessionAggregate: () => Promise.resolve(null),
+      restoreSession: (command) => Promise.resolve(command.session),
       commitTurn: () => Promise.reject(new Error("not invoked")),
       recordFailedTurn: () => Promise.resolve(),
       resetSession: () => Promise.resolve(),
@@ -166,6 +171,80 @@ describe("core contracts", () => {
     ).resolves.toMatchObject({ summaryText: "" });
     await expect(store.getMessages("session-1")).resolves.toEqual([]);
     expect(recorded).toHaveLength(1);
+  });
+
+  it("exposes provider-neutral conversation recovery capabilities", async () => {
+    const claims: SessionResumeClaims = {
+      version: 1,
+      sessionId: "session-1",
+      userId: "user-1",
+      provider: "provider-1",
+      providerKey: "profile-1",
+      externalConversationId: "external-1",
+      issuedAt: "2026-08-25T00:00:00.000Z",
+    };
+    const codec: ResumeTokenCodec = {
+      encode: (value) => JSON.stringify(value),
+      decode: (token) => JSON.parse(token) as SessionResumeClaims,
+    };
+    const history: ConversationHistorySource = {
+      loadHistory: () =>
+        Promise.resolve([
+          {
+            id: "entry-1",
+            userContent: "Hello",
+            assistantContent: "Hi",
+            createdAt: "2026-08-25T00:00:00.000Z",
+          },
+        ]),
+    };
+    const command: RestoreSessionCommand = {
+      session: {
+        id: "session-1",
+        userId: "user-1",
+        status: "ACTIVE",
+        revision: 0,
+        createdAt: "2026-08-25T00:00:00.000Z",
+        updatedAt: "2026-08-25T00:00:00.000Z",
+        lastActiveAt: "2026-08-25T00:00:00.000Z",
+      },
+      context: {
+        version: "1.0",
+        revision: 0,
+        conversation: {},
+        workflow: { state: {} },
+        runtime: {},
+      },
+      messages: [],
+      providerBinding: {
+        sessionId: "session-1",
+        provider: "provider-1",
+        providerKey: "profile-1",
+        externalConversationId: "external-1",
+      },
+    };
+    const store: RuntimeStore = {
+      loadSessionAggregate: () => Promise.resolve(null),
+      restoreSession: (value) => Promise.resolve(value.session),
+      commitTurn: () => Promise.reject(new Error("not invoked")),
+      recordFailedTurn: () => Promise.resolve(),
+      resetSession: () => Promise.resolve(),
+      commitCompaction: () => Promise.resolve(),
+      getSession: () => Promise.resolve(null),
+      getMessages: () => Promise.resolve([]),
+    };
+
+    expect(codec.decode(codec.encode(claims))).toEqual(claims);
+    await expect(
+      history.loadHistory({
+        externalConversationId: claims.externalConversationId,
+        userId: claims.userId,
+        maximumEntries: 200,
+      }),
+    ).resolves.toHaveLength(1);
+    await expect(store.restoreSession(command)).resolves.toEqual(
+      command.session,
+    );
   });
 });
 

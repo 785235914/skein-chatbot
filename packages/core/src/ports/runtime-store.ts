@@ -88,6 +88,13 @@ export interface ResetSessionCommand {
   resetAt: string;
 }
 
+export interface RestoreSessionCommand {
+  session: RuntimeSession;
+  context: SkeinContext;
+  messages: readonly CanonicalMessage[];
+  providerBinding: ProviderConversationBinding;
+}
+
 export interface CompactionCommitCommand {
   sessionId: string;
   expectedRevision: number;
@@ -107,6 +114,7 @@ export interface RuntimeStore {
    * through `getMessages`.
    */
   loadSessionAggregate(sessionId: string): Promise<SessionAggregate | null>;
+  restoreSession(command: RestoreSessionCommand): Promise<RuntimeSession>;
   commitTurn(command: CommitTurnCommand): Promise<CommitTurnResult>;
   recordFailedTurn(command: FailedTurnCommand): Promise<void>;
   resetSession(command: ResetSessionCommand): Promise<void>;

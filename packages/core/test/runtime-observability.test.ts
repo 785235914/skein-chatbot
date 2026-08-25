@@ -488,6 +488,7 @@ describe("Runtime observability", () => {
     const conflictingStore: RuntimeStore = {
       ...baseStore,
       loadSessionAggregate: (sessionId) => baseStore.loadSessionAggregate(sessionId),
+      restoreSession: (command) => baseStore.restoreSession(command),
       commitTurn: () =>
         Promise.reject(
           new RuntimeError(RuntimeErrorCode.SESSION_CONFLICT, "secret conflict"),
@@ -586,6 +587,7 @@ describe("Runtime observability", () => {
     const baseStore = new InMemoryRuntimeStore();
     const store: RuntimeStore = {
       loadSessionAggregate: (sessionId) => baseStore.loadSessionAggregate(sessionId),
+      restoreSession: (command) => baseStore.restoreSession(command),
       commitTurn: async (command) => {
         controller.abort("late abort secret");
         return baseStore.commitTurn(command);

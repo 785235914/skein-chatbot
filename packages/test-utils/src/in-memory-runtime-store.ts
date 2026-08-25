@@ -11,6 +11,7 @@ import {
   type FailedTurnCommand,
   type ProviderConversationBinding,
   type ResetSessionCommand,
+  type RestoreSessionCommand,
   type RuntimeSession,
   type RuntimeStore,
   type SessionAggregate,
@@ -64,6 +65,15 @@ export class InMemoryRuntimeStore implements RuntimeStore {
   loadSessionAggregate(sessionId: string): Promise<SessionAggregate | null> {
     const stored = this.sessions.get(sessionId);
     return Promise.resolve(stored === undefined ? null : publicAggregate(stored));
+  }
+
+  restoreSession(_command: RestoreSessionCommand): Promise<RuntimeSession> {
+    return Promise.reject(
+      new RuntimeError(
+        RuntimeErrorCode.INTERNAL_ERROR,
+        "Session restoration is not implemented.",
+      ),
+    );
   }
 
   commitTurn(command: CommitTurnCommand): Promise<CommitTurnResult> {

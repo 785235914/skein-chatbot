@@ -30,6 +30,7 @@ import type {
   CompactionCommitCommand,
   FailedTurnCommand,
   ResetSessionCommand,
+  RestoreSessionCommand,
   RuntimeSession,
   RuntimeStore,
   SessionAggregate,
@@ -101,6 +102,10 @@ class RecordingStore implements RuntimeStore {
 
   loadSessionAggregate(_sessionId: string): Promise<SessionAggregate | null> {
     return Promise.resolve(this.value);
+  }
+
+  restoreSession(_command: RestoreSessionCommand): Promise<RuntimeSession> {
+    return Promise.reject(new Error("restoreSession is outside this test"));
   }
 
   commitTurn(_command: CommitTurnCommand): Promise<CommitTurnResult> {

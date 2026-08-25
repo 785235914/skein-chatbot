@@ -6,6 +6,7 @@ import {
   type CompactionCommitCommand,
   type FailedTurnCommand,
   type ResetSessionCommand,
+  type RestoreSessionCommand,
   type RuntimeSession,
   type RuntimeStore,
   type SessionAggregate,
@@ -220,6 +221,12 @@ export class PrismaRuntimeStore implements RuntimeStore {
     } catch (error) {
       throw mapPrismaError(error);
     }
+  }
+
+  restoreSession(_command: RestoreSessionCommand): Promise<RuntimeSession> {
+    return Promise.reject(
+      createDatabaseError(new Error("Session restoration is not implemented.")),
+    );
   }
 
   async commitTurn(command: CommitTurnCommand): Promise<CommitTurnResult> {
