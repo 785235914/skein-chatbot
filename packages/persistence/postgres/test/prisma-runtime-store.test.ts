@@ -5,6 +5,7 @@ import {
   createDefaultSkeinContext,
   type CommitTurnCommand,
   type ConversationSummary,
+  type RestoreSessionCommand,
 } from "@skein-chatbot/core";
 
 import { PrismaRuntimeStore } from "../src/prisma-runtime-store.js";
@@ -73,7 +74,143 @@ const summary: ConversationSummary = {
   createdAt: "2026-08-20T01:01:00.000Z",
 };
 
+const restoreCommand = (): RestoreSessionCommand => ({
+  session: {
+    id: "restored-session",
+    userId: "user-1",
+    status: "ACTIVE",
+    revision: 0,
+    createdAt: "2026-08-25T00:00:00.000Z",
+    updatedAt: "2026-08-25T00:00:03.000Z",
+    lastActiveAt: "2026-08-25T00:00:03.000Z",
+  },
+  context: createDefaultSkeinContext(0),
+  messages: [
+    {
+      id: "history-1-user",
+      sessionId: "restored-session",
+      role: "USER",
+      content: "Earlier question",
+      createdAt: "2026-08-25T00:00:01.000Z",
+    },
+    {
+      id: "history-1-assistant",
+      sessionId: "restored-session",
+      role: "ASSISTANT",
+      content: "Earlier answer",
+      createdAt: "2026-08-25T00:00:02.000Z",
+    },
+  ],
+  providerBinding: {
+    sessionId: "restored-session",
+    provider: "provider",
+    providerKey: "profile",
+    externalConversationId: "external-conversation",
+  },
+});
+
 describe("PrismaRuntimeStore", () => {
+  it("restores a complete aggregate across repository instances", async () => {
+    const client = new FakePrismaClient();
+    const store = new PrismaRuntimeStore(client);
+    const command = restoreCommand();
+
+    await expect(store.restoreSession(command)).resolves.toEqual(
+      command.session,
+    );
+
+    const restarted = new PrismaRuntimeStore(client);
+    expect(await restarted.loadSessionAggregate("restored-session")).toEqual({
+      session: command.session,
+      context: command.context,
+      messages: command.messages,
+      providerBindings: [command.providerBinding],
+    });
+    expect(client.inspect()).toMatchObject({
+      sessions: 1,
+      messages: 2,
+      bindings: 1,
+    });
+    expect(client.inspect().turns).toEqual([]);
+  });
+
+  it.each([
+    ["duplicate message IDs", (command: RestoreSessionCommand) => {
+      (command.messages[1] as { id: string }).id = command.messages[0]!.id;
+    }],
+    ["wrong message session", (command: RestoreSessionCommand) => {
+      (command.messages[0] as { sessionId: string }).sessionId = "other";
+    }],
+    ["nonchronological messages", (command: RestoreSessionCommand) => {
+      (command.messages[0] as { createdAt: string }).createdAt =
+        "2026-08-25T00:00:03.000Z";
+    }],
+    ["nonzero context revision", (command: RestoreSessionCommand) => {
+      command.context.revision = 1;
+    }],
+    ["nondefault context", (command: RestoreSessionCommand) => {
+      command.context.runtime.updatedAt = "2026-08-25T00:00:00.000Z";
+    }],
+    ["wrong binding session", (command: RestoreSessionCommand) => {
+      command.providerBinding.sessionId = "other";
+    }],
+  ])("rejects restore %s before database mutation", async (_label, mutate) => {
+    const client = new FakePrismaClient();
+    const store = new PrismaRuntimeStore(client);
+    const command = restoreCommand();
+    mutate(command);
+
+    await expect(store.restoreSession(command)).rejects.toMatchObject({
+      code: RuntimeErrorCode.CONTEXT_INVALID,
+    });
+    expect(client.inspect()).toMatchObject({
+      sessions: 0,
+      messages: 0,
+      bindings: 0,
+    });
+  });
+
+  it("rolls back the whole restore when a later write fails", async () => {
+    const client = new FakePrismaClient();
+    const store = new PrismaRuntimeStore(client);
+    client.failNext(
+      "providerBinding.upsert",
+      Object.assign(new Error("offline"), { code: "P1001" }),
+    );
+
+    await expect(store.restoreSession(restoreCommand())).rejects.toMatchObject({
+      code: RuntimeErrorCode.DATABASE_ERROR,
+    });
+    expect(client.inspect()).toMatchObject({
+      sessions: 0,
+      messages: 0,
+      bindings: 0,
+    });
+  });
+
+  it("maps every existing-session restore to SESSION_CONFLICT without overwrite", async () => {
+    const client = new FakePrismaClient();
+    const store = new PrismaRuntimeStore(client);
+    const original = restoreCommand();
+    await store.restoreSession(original);
+    const conflicting = restoreCommand();
+    conflicting.session.userId = "other-user";
+    conflicting.providerBinding.externalConversationId = "other-external";
+
+    await expect(store.restoreSession(conflicting)).rejects.toMatchObject({
+      code: RuntimeErrorCode.SESSION_CONFLICT,
+    });
+    await expect(store.restoreSession(restoreCommand())).rejects.toMatchObject({
+      code: RuntimeErrorCode.SESSION_CONFLICT,
+    });
+    expect(await store.loadSessionAggregate("restored-session")).toEqual({
+      session: original.session,
+      context: original.context,
+      messages: original.messages,
+      providerBindings: [original.providerBinding],
+    });
+  });
+
   it("persists the complete aggregate across repository instances", async () => {
     const client = new FakePrismaClient();
     const first = new PrismaRuntimeStore(client);

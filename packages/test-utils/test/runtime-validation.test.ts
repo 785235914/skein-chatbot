@@ -6,6 +6,8 @@ import {
   ChatRuntime,
   DEFAULT_RUNTIME_CONFIG,
   RuntimeErrorCode,
+  createDefaultSkeinContext,
+  type RestoreSessionCommand,
 } from "@skein-chatbot/core";
 
 import {
@@ -39,6 +41,41 @@ const collect = async (
   }
   return events;
 };
+
+const restoreCommand = (): RestoreSessionCommand => ({
+  session: {
+    id: "restored-session",
+    userId: "user-1",
+    status: "ACTIVE",
+    revision: 0,
+    createdAt: "2026-08-25T00:00:00.000Z",
+    updatedAt: "2026-08-25T00:00:03.000Z",
+    lastActiveAt: "2026-08-25T00:00:03.000Z",
+  },
+  context: createDefaultSkeinContext(0),
+  messages: [
+    {
+      id: "history-1-user",
+      sessionId: "restored-session",
+      role: "USER",
+      content: "Earlier question",
+      createdAt: "2026-08-25T00:00:01.000Z",
+    },
+    {
+      id: "history-1-assistant",
+      sessionId: "restored-session",
+      role: "ASSISTANT",
+      content: "Earlier answer",
+      createdAt: "2026-08-25T00:00:02.000Z",
+    },
+  ],
+  providerBinding: {
+    sessionId: "restored-session",
+    provider: "provider",
+    providerKey: "profile",
+    externalConversationId: "external-conversation",
+  },
+});
 
 describe("runtime validation with the invalid-result fixture", () => {
   it("rejects an invalid blocking result without committing state", async () => {
@@ -87,6 +124,82 @@ describe("runtime validation with the invalid-result fixture", () => {
 });
 
 describe("InMemoryRuntimeStore", () => {
+  it("restores one complete aggregate atomically and clones every input", async () => {
+    const store = new InMemoryRuntimeStore();
+    const command = restoreCommand();
+
+    await expect(store.restoreSession(command)).resolves.toEqual(
+      command.session,
+    );
+    command.session.userId = "tampered";
+    (command.messages[0] as { content: string }).content = "tampered";
+    command.providerBinding.externalConversationId = "tampered";
+
+    expect(await store.getMessages("restored-session")).toEqual(
+      restoreCommand().messages,
+    );
+    expect(await store.loadSessionAggregate("restored-session")).toEqual({
+      session: restoreCommand().session,
+      context: restoreCommand().context,
+      messages: restoreCommand().messages,
+      providerBindings: [restoreCommand().providerBinding],
+    });
+  });
+
+  it.each([
+    ["duplicate message IDs", (command: RestoreSessionCommand) => {
+      (command.messages[1] as { id: string }).id = command.messages[0]!.id;
+    }],
+    ["wrong message session", (command: RestoreSessionCommand) => {
+      (command.messages[0] as { sessionId: string }).sessionId = "other";
+    }],
+    ["nonchronological messages", (command: RestoreSessionCommand) => {
+      (command.messages[0] as { createdAt: string }).createdAt =
+        "2026-08-25T00:00:03.000Z";
+    }],
+    ["nonzero session revision", (command: RestoreSessionCommand) => {
+      command.session.revision = 1;
+    }],
+    ["nondefault context", (command: RestoreSessionCommand) => {
+      command.context.conversation.topic = "not-default";
+    }],
+    ["wrong binding session", (command: RestoreSessionCommand) => {
+      command.providerBinding.sessionId = "other";
+    }],
+  ])("rejects %s without partial state", async (_label, mutate) => {
+    const store = new InMemoryRuntimeStore();
+    const command = restoreCommand();
+    mutate(command);
+
+    await expect(store.restoreSession(command)).rejects.toMatchObject({
+      code: RuntimeErrorCode.CONTEXT_INVALID,
+    });
+    expect(await store.getSession("restored-session")).toBeNull();
+    expect(await store.getMessages("restored-session")).toEqual([]);
+  });
+
+  it("never overwrites an existing restored session", async () => {
+    const store = new InMemoryRuntimeStore();
+    const original = restoreCommand();
+    await store.restoreSession(original);
+    const conflicting = restoreCommand();
+    conflicting.session.userId = "other-user";
+    conflicting.providerBinding.externalConversationId = "other-external";
+
+    await expect(store.restoreSession(conflicting)).rejects.toMatchObject({
+      code: RuntimeErrorCode.SESSION_CONFLICT,
+    });
+    await expect(store.restoreSession(restoreCommand())).rejects.toMatchObject({
+      code: RuntimeErrorCode.SESSION_CONFLICT,
+    });
+    expect(await store.loadSessionAggregate("restored-session")).toEqual({
+      session: original.session,
+      context: original.context,
+      messages: original.messages,
+      providerBindings: [original.providerBinding],
+    });
+  });
+
   it("clones state at every boundary and commits compaction atomically", async () => {
     const store = new InMemoryRuntimeStore();
     const { runtime } = runtimeFor(

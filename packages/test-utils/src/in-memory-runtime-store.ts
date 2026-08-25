@@ -15,6 +15,7 @@ import {
   type RuntimeSession,
   type RuntimeStore,
   type SessionAggregate,
+  validateRestoreSessionCommand,
 } from "@skein-chatbot/core";
 
 interface StoredSession {
@@ -67,13 +68,21 @@ export class InMemoryRuntimeStore implements RuntimeStore {
     return Promise.resolve(stored === undefined ? null : publicAggregate(stored));
   }
 
-  restoreSession(_command: RestoreSessionCommand): Promise<RuntimeSession> {
-    return Promise.reject(
-      new RuntimeError(
-        RuntimeErrorCode.INTERNAL_ERROR,
-        "Session restoration is not implemented.",
-      ),
-    );
+  async restoreSession(command: RestoreSessionCommand): Promise<RuntimeSession> {
+    validateRestoreSessionCommand(command);
+    if (this.sessions.has(command.session.id)) {
+      throw conflict();
+    }
+    const next: StoredSession = {
+      session: clone(command.session),
+      context: clone(command.context),
+      messages: clone([...command.messages]),
+      providerBindings: [clone(command.providerBinding)],
+      completedTurns: [],
+      compactedMessageIds: [],
+    };
+    this.sessions.set(command.session.id, next);
+    return clone(next.session);
   }
 
   commitTurn(command: CommitTurnCommand): Promise<CommitTurnResult> {

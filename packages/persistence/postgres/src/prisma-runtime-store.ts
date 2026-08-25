@@ -10,6 +10,7 @@ import {
   type RuntimeSession,
   type RuntimeStore,
   type SessionAggregate,
+  validateRestoreSessionCommand,
 } from "@skein-chatbot/core";
 
 import {
@@ -223,10 +224,81 @@ export class PrismaRuntimeStore implements RuntimeStore {
     }
   }
 
-  restoreSession(_command: RestoreSessionCommand): Promise<RuntimeSession> {
-    return Promise.reject(
-      createDatabaseError(new Error("Session restoration is not implemented.")),
+  async restoreSession(command: RestoreSessionCommand): Promise<RuntimeSession> {
+    validateRestoreSessionCommand(command);
+    const contextValue = encodeSkeinContext(command.context);
+    const createdAt = commandDate(command.session.createdAt, "session createdAt");
+    const updatedAt = commandDate(command.session.updatedAt, "session updatedAt");
+    const lastActiveAt = commandDate(
+      command.session.lastActiveAt,
+      "session lastActiveAt",
     );
+    const messages = command.messages.map((message) => ({
+      id: message.id,
+      sessionId: command.session.id,
+      role: message.role,
+      content: message.content,
+      createdAt: commandDate(message.createdAt, "message createdAt"),
+    }));
+
+    try {
+      await this.client.$transaction(async (transaction) => {
+        await transaction.session.create({
+          data: {
+            id: command.session.id,
+            userId: command.session.userId,
+            status: "ACTIVE",
+            createdAt,
+            updatedAt,
+            lastActiveAt,
+          },
+        });
+        await transaction.contextState.create({
+          data: {
+            sessionId: command.session.id,
+            revision: 0,
+            value: contextValue,
+            updatedAt,
+          },
+        });
+        if (messages.length > 0) {
+          const messageCount = countFrom(
+            await transaction.message.createMany({ data: messages }),
+            "Message.createMany",
+          );
+          if (messageCount !== messages.length) {
+            throw createDatabaseError(
+              new Error("The restore transaction did not insert every message."),
+            );
+          }
+        }
+        const binding = command.providerBinding;
+        await transaction.providerBinding.upsert({
+          where: {
+            sessionId_provider_providerKey: {
+              sessionId: command.session.id,
+              provider: binding.provider,
+              providerKey: binding.providerKey,
+            },
+          },
+          create: {
+            sessionId: command.session.id,
+            provider: binding.provider,
+            providerKey: binding.providerKey,
+            externalConversationId: binding.externalConversationId,
+            createdAt: updatedAt,
+            updatedAt,
+          },
+          update: {
+            externalConversationId: binding.externalConversationId,
+            updatedAt,
+          },
+        });
+      });
+      return structuredClone(command.session);
+    } catch (error) {
+      throw mapPrismaError(error, { optimisticConflict: true });
+    }
   }
 
   async commitTurn(command: CommitTurnCommand): Promise<CommitTurnResult> {
