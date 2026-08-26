@@ -803,11 +803,16 @@ a:focus-visible {
     padding: 20px 16px;
     border-radius: 0 20px 20px 0;
     transform: translateX(-105%);
-    transition: transform 180ms ease;
+    visibility: hidden;
+    transition:
+      transform 180ms ease,
+      visibility 0s linear 180ms;
   }
 
   .conversation-sidebar.is-open {
     transform: translateX(0);
+    visibility: visible;
+    transition-delay: 0s;
   }
 
   .sidebar-close-button {
@@ -824,12 +829,17 @@ a:focus-visible {
     background: rgb(20 29 22 / 42%);
     border: 0;
     opacity: 0;
-    transition: opacity 180ms ease;
+    visibility: hidden;
+    transition:
+      opacity 180ms ease,
+      visibility 0s linear 180ms;
   }
 
   .drawer-backdrop.is-open {
     pointer-events: auto;
     opacity: 1;
+    visibility: visible;
+    transition-delay: 0s;
   }
 }
 

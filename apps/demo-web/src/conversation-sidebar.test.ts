@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
@@ -48,6 +50,23 @@ const renderSidebar = (
   );
 
 describe("ConversationSidebar", () => {
+  it("removes the closed mobile drawer and backdrop from keyboard focus", () => {
+    const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+
+    expect(css).toMatch(
+      /@media \(max-width: 800px\)[\s\S]*?\.conversation-sidebar\s*\{[\s\S]*?visibility:\s*hidden;/u,
+    );
+    expect(css).toMatch(
+      /@media \(max-width: 800px\)[\s\S]*?\.conversation-sidebar\.is-open\s*\{[\s\S]*?visibility:\s*visible;/u,
+    );
+    expect(css).toMatch(
+      /@media \(max-width: 800px\)[\s\S]*?\.drawer-backdrop\s*\{[\s\S]*?visibility:\s*hidden;/u,
+    );
+    expect(css).toMatch(
+      /@media \(max-width: 800px\)[\s\S]*?\.drawer-backdrop\.is-open\s*\{[\s\S]*?visibility:\s*visible;/u,
+    );
+  });
+
   it("renders labelled navigation, New Conversation, and newest-first session buttons", () => {
     const html = renderSidebar();
 

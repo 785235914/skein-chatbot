@@ -38,6 +38,18 @@ Skein V1 events are additive. Provider events that require retracting emitted te
 
 The external `conversation_id` is never a Skein session ID. Runtime stores it as a binding keyed by Skein session, provider and profile-aware `providerKey`, and commits it only after a successful turn.
 
+## Conversation history recovery
+
+The Dify adapter implements the provider-neutral history port with:
+
+```text
+GET <DIFY_BASE_URL>/messages?conversation_id=<private-binding>&user=<opaque-user>&limit=100
+Authorization: Bearer <DIFY_API_KEY>
+Accept: application/json
+```
+
+Older pages use `first_id` from the previous page. Retrieval accepts at most 100 rows per request, 200 rows cumulatively and 8 MiB of UTF-8 response data cumulatively. It requires JSON media types, bounded validated fields, UUID message IDs, a stable conversation ID, unique/progressing cursors and valid timestamps. Dify's newest-first pages are normalized into chronological provider-neutral entries before Runtime restoration. URLs, credentials, external IDs and raw responses never enter public errors.
+
 ## Error mapping
 
 HTTP status, safe bounded provider codes and transport failures map to provider-neutral errors such as `PROVIDER_TIMEOUT`, `PROVIDER_RATE_LIMITED`, `PROVIDER_UNAVAILABLE`, `PROVIDER_INVALID_RESPONSE`, `ABORTED` or `ORCHESTRATION_FAILED`. Provider payloads, stack traces and credentials are not public.

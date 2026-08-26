@@ -358,14 +358,14 @@ export class ChatRuntime {
     throwIfAborted(signal);
     const messages: CanonicalMessage[] = history.flatMap((entry) => [
       {
-        id: `history:${entry.id}:user`,
+        id: `history:${entry.id}:0-user`,
         sessionId: claims.sessionId,
         role: "USER" as const,
         content: entry.userContent,
         createdAt: entry.createdAt,
       },
       {
-        id: `history:${entry.id}:assistant`,
+        id: `history:${entry.id}:1-assistant`,
         sessionId: claims.sessionId,
         role: "ASSISTANT" as const,
         content: entry.assistantContent,

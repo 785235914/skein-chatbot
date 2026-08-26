@@ -25,7 +25,7 @@ pnpm dev:mock
 
 ## Public API
 
-`POST /api/v1/chat` is the blocking endpoint and `POST /api/v1/chat/stream` returns SSE. Sessions are available through `GET /api/v1/sessions/:sessionId`, ordered messages through `GET /api/v1/sessions/:sessionId/messages`, reset through `POST /api/v1/sessions/:sessionId/reset`, and active-turn abort through `POST /api/v1/sessions/:sessionId/abort`. Liveness and readiness are `GET /api/v1/health` and `GET /api/v1/ready`. Contract details are in [public API](docs/public-api.md).
+`POST /api/v1/chat` is the blocking endpoint and `POST /api/v1/chat/stream` returns SSE. Sessions are available through `GET /api/v1/sessions/:sessionId`, ordered messages through `GET /api/v1/sessions/:sessionId/messages`, opaque-token recovery through `POST /api/v1/sessions/resume`, reset through `POST /api/v1/sessions/:sessionId/reset`, and active-turn abort through `POST /api/v1/sessions/:sessionId/abort`. Liveness and readiness are `GET /api/v1/health` and `GET /api/v1/ready`. Contract details are in [public API](docs/public-api.md).
 
 ## Dify Adapter
 
@@ -42,6 +42,20 @@ When app field names differ, create an ignored local profile from the documented
 ## Session
 
 The public `sessionId` is the Skein identity. External provider conversation IDs remain private bindings and are never public session fields.
+
+When Dify recovery is configured, a completed chat returns an optional opaque `resumeToken`. The Demo stores that token with canonical messages and the Skein `sessionId`, then posts it in a JSON body after a browser or API restart. A fresh in-memory Runtime can retrieve bounded provider history, atomically rebuild the same Skein session and continue the private provider conversation. Tokens never belong in URLs or logs.
+
+Generate the required local 32-byte key with Node, and copy only the output into the ignored `apps/api/.env.local` used by `pnpm dev:dify`:
+
+```text
+node -e "console.log(require('node:crypto').randomBytes(32).toString('base64'))"
+```
+
+```text
+SESSION_RESUME_SECRET=replace-with-generated-base64-value
+```
+
+Changing this secret invalidates existing browser resume tokens. Mock mode intentionally issues no token; tokenless Mock conversations remain usable from the browser cache while the same API process still owns their in-memory sessions.
 
 ## Context
 
@@ -69,11 +83,11 @@ SSE exposes canonical started, status, delta, source and terminal events only; i
 
 ## Persistence
 
-PostgreSQL is selected only by a non-empty `DATABASE_URL`; otherwise persistence is in memory. The PostgreSQL setup and opt-in restart verification are documented in [persistence](docs/persistence.md).
+PostgreSQL is selected only by a non-empty `DATABASE_URL`; otherwise persistence is in memory. Dify token recovery can reconstruct an in-memory session after restart, but it restores provider-visible message pairs with default context revision `0`, not Skein-only workflow/context state. PostgreSQL remains the full durability path. Setup and opt-in restart verification are documented in [persistence](docs/persistence.md).
 
 ## Frontend Integration
 
-The React/Vite Demo speaks only the public API and is canonical. It is replaceable because it depends only on REST and SSE contracts.
+The React/Vite Demo speaks only the public API and is canonical. Its responsive conversation sidebar persists a versioned `skein.chat.history.v1` cache in browser localStorage, displays cached messages immediately, then replaces them with canonical recovered history when a resume token is available. Each conversation is capped at 400 cached messages; malformed, oversized or quota-failing cache data produces a warning and is not silently deleted or pruned. Browser storage contains message content and an opaque bearer-like token, so production deployments must account for device privacy and XSS risk. The client remains replaceable because it depends only on REST and SSE contracts.
 
 ## DeepSeek Dev UI
 
@@ -93,7 +107,7 @@ pnpm test
 pnpm build
 ```
 
-The provider-free HTTP journey is `pnpm exec vitest run scripts/mock-public-e2e.test.ts`. The acceptance mapping is [e2e acceptance](docs/e2e-acceptance.md).
+The provider-free HTTP journey is `pnpm exec vitest run scripts/mock-public-e2e.test.ts`. The sanitized Dify restart/resume journey is `pnpm smoke:dify`; it reports `NOT RUN` when ignored local configuration is incomplete. The acceptance mapping is [e2e acceptance](docs/e2e-acceptance.md).
 
 ## Extension Points
 
@@ -107,4 +121,4 @@ Future work may add independently replaceable adapters and transport gateways wi
 
 Run `pnpm scrub` before publishing. It scans only Git cached and unignored public candidates and reports rule, repository-relative path and line number without printing matched values. Keep credentials in ignored local configuration; never commit provider keys, connection strings, private keys, private network addresses or machine paths.
 
-Real Dify smoke and real PostgreSQL restart verification are **NOT RUN** without separately authorized local credentials and a dedicated database. Their commands are implemented, but no external compatibility claim is implied by provider-free tests.
+Real Dify restart/resume smoke and real PostgreSQL restart verification are **NOT RUN** without complete ignored local Dify configuration and a separately authorized dedicated database. Their commands are implemented, but no external compatibility claim is implied by provider-free tests.

@@ -7,6 +7,7 @@ import type { ResumeSessionResponse, RuntimeEvent } from "@skein-chatbot/contrac
 
 import { App } from "./App.js";
 import {
+  CONVERSATION_CACHE_KEY,
   loadConversationCache,
   saveConversationCache,
   type BrowserConversationCache,
@@ -130,6 +131,47 @@ describe("App conversation persistence", () => {
     });
   });
 
+  it("keeps a successful recovery active when canonical history exceeds the cache limit", async () => {
+    saveConversationCache(localStorage, cachedDocument());
+    const originalPersisted = localStorage.getItem(CONVERSATION_CACHE_KEY);
+    const messages = Array.from({ length: 401 }, (_, index) => ({
+      id: `restored-message-${index}`,
+      sessionId: "session-1",
+      role: index % 2 === 0 ? ("USER" as const) : ("ASSISTANT" as const),
+      content: `Canonical message ${index}`,
+      createdAt: new Date(Date.UTC(2026, 7, 25, 0, 0, index)).toISOString(),
+    }));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          new Response(
+            JSON.stringify(restoredResponse({ messages })),
+            {
+              headers: { "content-type": "application/json" },
+              status: 200,
+            },
+          ),
+        ),
+      ),
+    );
+
+    render(<App />);
+
+    expect(await screen.findByText("Canonical message 400")).toBeTruthy();
+    expect(
+      await screen.findByText("Saved conversations could not be updated."),
+    ).toBeTruthy();
+    expect(screen.getByRole("textbox", { name: "Message" })).not.toHaveProperty(
+      "disabled",
+      true,
+    );
+    expect(screen.queryByText(/Cached messages are read-only\./u)).toBeNull();
+    expect(localStorage.getItem(CONVERSATION_CACHE_KEY)).toBe(
+      originalPersisted,
+    );
+  });
+
   it("keeps cached content read-only and offers retry when recovery fails", async () => {
     saveConversationCache(localStorage, cachedDocument());
     const publicError = {
@@ -185,6 +227,23 @@ describe("App conversation persistence", () => {
     });
     expect(loadConversationCache(localStorage).cache.activeSessionId).toBeUndefined();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("returns focus to the history opener when the drawer close button is used", () => {
+    vi.stubGlobal("fetch", vi.fn());
+    render(<App />);
+    const opener = screen.getByRole("button", {
+      name: "Conversation history",
+    });
+
+    fireEvent.click(opener);
+    const closeButton = screen.getByRole("button", {
+      name: "Close conversation history",
+    });
+    closeButton.focus();
+    fireEvent.click(closeButton);
+
+    expect(document.activeElement).toBe(opener);
   });
 
   it("does not offer an impossible recovery retry after a tokenless session is lost", async () => {
@@ -285,5 +344,64 @@ describe("App conversation persistence", () => {
         ],
       });
     });
+  });
+
+  it("warns without overwriting cached history when a completed turn exceeds the message limit", async () => {
+    const fullConversation = {
+      ...cachedDocument().conversations[0]!,
+      resumeToken: undefined,
+      messages: Array.from({ length: 400 }, (_, index) => ({
+        id: `cached-message-${index}`,
+        role: index % 2 === 0 ? ("USER" as const) : ("ASSISTANT" as const),
+        content: `Cached message ${index}`,
+        createdAt: new Date(Date.UTC(2026, 7, 25, 0, 0, index)).toISOString(),
+      })),
+    };
+    const fullCache = cachedDocument({ conversations: [fullConversation] });
+    expect(saveConversationCache(localStorage, fullCache)).toEqual({
+      saved: true,
+    });
+    const originalPersisted = localStorage.getItem(CONVERSATION_CACHE_KEY);
+    const completedEvent: RuntimeEvent = {
+      type: "turn.completed",
+      result: {
+        sessionId: "session-1",
+        turnId: "turn-over-limit",
+        answer: "Answer beyond the cache limit",
+        status: "ANSWER",
+        sources: [],
+        followUpQuestion: "",
+        followUpGuidance: "",
+        metadata: {},
+        resumeToken: "refreshed-token",
+      },
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          new Response(
+            `event: turn.completed\ndata: ${JSON.stringify(completedEvent)}\n\n`,
+            {
+              headers: { "content-type": "text/event-stream" },
+              status: 200,
+            },
+          ),
+        ),
+      ),
+    );
+    render(<App />);
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Message" }), {
+      target: { value: "Question beyond the cache limit" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    expect(
+      await screen.findByText("Saved conversations could not be updated."),
+    ).toBeTruthy();
+    expect(localStorage.getItem(CONVERSATION_CACHE_KEY)).toBe(
+      originalPersisted,
+    );
   });
 });

@@ -11,6 +11,8 @@ Client
 
 Chat Runtime
   -> RuntimeStore port -> in-memory or PostgreSQL implementation
+  -> ResumeTokenCodec port
+  -> ConversationHistorySource port
   -> Guard ports
   -> CompactionProvider port
   -> Audit / Metrics / Telemetry ports
@@ -55,6 +57,21 @@ A failed business execution commits no completed business turn, canonical user o
 ## Conversation identity
 
 Skein `sessionId` is the public identity. A provider conversation ID is stored in a separate binding identified by `(sessionId, provider, providerKey)`. The adapter returns it through a provider-neutral internal result field; Runtime commits it with the turn. It is never a public session ID.
+
+## Restart recovery boundary
+
+```text
+Browser versioned cache
+  -> POST /api/v1/sessions/resume { resumeToken }
+    -> provider-neutral token claims
+      -> ConversationHistorySource
+        -> RuntimeStore.restoreSession (atomic)
+          -> normal chat continuation by Skein sessionId
+```
+
+The browser stores only the public Skein `sessionId`, canonical USER/ASSISTANT messages, a title and an authenticated opaque token. The API's AES-256-GCM codec is an edge implementation; Core sees only `ResumeTokenCodec` and provider-neutral claims. Dify owns its `/messages` protocol behind `ConversationHistorySource`. Neither the public contract nor Core imports Dify types.
+
+Restore first checks for an existing compatible aggregate. A fresh store loads at most 200 provider history rows, maps each row to deterministic canonical user/assistant messages, reconstructs the default generic context at revision `0`, and inserts session, context, messages and binding atomically. A conflicting owner or binding is never overwritten. This path restores conversation continuity; it does not claim to recreate provider-invisible Skein summaries, turns or workflow context.
 
 ## Modular-monolith choice
 

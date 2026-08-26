@@ -77,7 +77,6 @@ const localMessagesToCache = (
 ): CachedMessage[] =>
   messages
     .filter((message) => message.pending !== true)
-    .slice(-400)
     .map((message) => ({
       id: message.id,
       role: message.role === "user" ? "USER" : "ASSISTANT",
@@ -161,6 +160,14 @@ export function App() {
   const activeController = useRef<AbortController | undefined>(undefined);
   const recoveryController = useRef<AbortController | undefined>(undefined);
   const recoverySequence = useRef(0);
+  const historyOpenerRef = useRef<HTMLButtonElement | null>(null);
+
+  const closeConversationDrawer = useCallback(() => {
+    setDrawerOpen(false);
+    if (drawerOpen) {
+      historyOpenerRef.current?.focus();
+    }
+  }, [drawerOpen]);
 
   const replaceMessages = useCallback(
     (
@@ -265,13 +272,17 @@ export function App() {
           updatedAt: response.session.updatedAt,
           messages: localMessagesToCache(restored),
         };
-        applyCache(
-          upsertCachedConversation(
-            cacheRef.current,
-            nextConversation,
-            true,
-          ),
-        );
+        try {
+          applyCache(
+            upsertCachedConversation(
+              cacheRef.current,
+              nextConversation,
+              true,
+            ),
+          );
+        } catch {
+          setCacheWarning("Saved conversations could not be updated.");
+        }
         setRecoveryState("idle");
         setStatusText("Ready");
       } catch (error) {
@@ -504,7 +515,7 @@ export function App() {
     setLastFailedMessage(undefined);
     setRecoveryState("idle");
     setStatusText("Ready");
-    setDrawerOpen(false);
+    closeConversationDrawer();
     try {
       applyCache(activateCachedConversation(cacheRef.current, undefined));
     } catch {
@@ -532,7 +543,7 @@ export function App() {
     setSessionId(conversation.sessionId);
     setDisplayError(undefined);
     setLastFailedMessage(undefined);
-    setDrawerOpen(false);
+    closeConversationDrawer();
     setRecoveryState(
       conversation.resumeToken === undefined ? "idle" : "recovering",
     );
@@ -578,6 +589,7 @@ export function App() {
           aria-expanded={drawerOpen}
           className="sidebar-toggle-button"
           onClick={() => setDrawerOpen((current) => !current)}
+          ref={historyOpenerRef}
           type="button"
         >
           Conversation history
@@ -594,7 +606,7 @@ export function App() {
       <button
         aria-label="Dismiss conversation history"
         className={drawerOpen ? "drawer-backdrop is-open" : "drawer-backdrop"}
-        onClick={() => setDrawerOpen(false)}
+        onClick={closeConversationDrawer}
         type="button"
       />
 
@@ -604,7 +616,7 @@ export function App() {
           conversations={browserCache.conversations}
           drawerOpen={drawerOpen}
           isRunning={isRunning}
-          onClose={() => setDrawerOpen(false)}
+          onClose={closeConversationDrawer}
           onNewConversation={handleNewConversation}
           onRetryRecovery={handleRetryRecovery}
           onSelectConversation={handleSelectConversation}

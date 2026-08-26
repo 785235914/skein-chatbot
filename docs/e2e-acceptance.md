@@ -1,12 +1,12 @@
 # E2E acceptance matrix
 
-This matrix preserves the 19 Section 67 scenarios in their original order. `PASS` means the cited automated test covers the stated contract; `PARTIAL` means the public client/API contract is covered but a rendered browser UI is not; `NOT RUN` requires separately authorized external infrastructure.
+This matrix preserves the 19 Section 67 scenarios in their original order. `PASS` means the cited automated or recorded local browser check covers the stated contract; `PARTIAL` means only part of the journey is covered; `NOT RUN` requires unavailable external configuration or infrastructure.
 
 ## Section 67 scenarios
 
 | # | Scenario | Evidence | Command | Status |
 | --- | --- | --- | --- | --- |
-| 1 | Demo UI -> Runtime -> Mock | Canonical Demo `createApiClient` over real loopback HTTP | `pnpm exec vitest run scripts/mock-public-e2e.test.ts` | PARTIAL |
+| 1 | Demo UI -> Runtime -> Mock | Canonical Demo over real loopback HTTP plus rendered desktop/mobile browser acceptance on 2026-08-26 | `pnpm exec vitest run scripts/mock-public-e2e.test.ts` plus recorded browser QA below | PASS |
 | 2 | Demo UI -> Runtime -> real Dify | Separately authorized external smoke only | `pnpm smoke:dify` | NOT RUN |
 | 3 | new session | Provider-free public journey | `pnpm exec vitest run scripts/mock-public-e2e.test.ts` | PASS |
 | 4 | multi-turn | Provider-free public journey | same | PASS |
@@ -45,9 +45,25 @@ This matrix preserves the 19 Section 67 scenarios in their original order. `PASS
 | Mapping-profile switch stays outside Runtime Core | Adapter profile regression and Core boundary scan | `pnpm exec vitest run packages/adapters/dify/test/dify-business-orchestrator.test.ts scripts/frontend-boundary.test.ts` | PASS |
 | Frontend replacement keeps the public REST/SSE boundary | Demo API and frontend-boundary regressions | `pnpm exec vitest run apps/demo-web/src/api.test.ts scripts/frontend-boundary.test.ts` | PASS |
 
+## Browser conversation resume acceptance
+
+| Scenario | Evidence | Status |
+| --- | --- | --- |
+| Opaque token issue, tamper rejection and no private-ID response leak | Token/API/Runtime regressions | PASS |
+| API restart into a fresh in-memory store | Two-Runtime mock-Dify restart E2E | PASS |
+| Chronological history and original continuation binding | Dify history unit tests, PostgreSQL tie-break ordering regression and restart E2E | PASS |
+| Atomic in-memory/PostgreSQL restore and conflict rejection | Store conformance tests | PASS |
+| Versioned cache corruption, oversize, quota, no-silent-truncation and non-fatal canonical recovery overflow handling | Demo cache and App persistence tests | PASS |
+| Reload persistence, new-conversation preservation and history switching | Rendered Mock browser QA at 1280x720 | PASS |
+| Mobile drawer, close/backdrop/new-conversation focus return, composer and no horizontal page overflow | Rendered Mock browser QA at 390x844; focus paths rechecked on 2026-08-27 | PASS |
+| Assistant Markdown table/code containment at narrow width | Rendered Mock browser QA at 390x844 plus component tests | PASS |
+| Browser console errors during exercised paths | Error-level log inspection returned none | PASS |
+
+Sanitized screenshots were retained only in the local temporary QA directory outside Git. The rendered Mock journey cannot exercise a real Dify token; recovery failure/retry states and canonical reconciliation remain covered by component/API tests and the provider-simulated restart E2E.
+
 ## External checks
 
 | Check | Command | Status |
 | --- | --- | --- |
-| Real Dify smoke against separately authorized local credentials | `pnpm smoke:dify` | NOT RUN |
+| Real Dify restart/resume smoke with complete ignored local configuration | `pnpm smoke:dify` | NOT RUN: required local Dify URL, key and resume secret were unavailable to this worktree |
 | Real PostgreSQL restart against a separately authorized dedicated database | `pnpm --filter @skein-chatbot/postgres test:postgres` | NOT RUN |

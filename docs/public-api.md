@@ -34,6 +34,8 @@ Successful response:
 }
 ```
 
+When the selected composition supports provider-history recovery, the response also contains an opaque `resumeToken`. The token is optional so provider-free and adapters without a history source retain the same chat contract. It contains no public provider field and must be treated as sensitive client state.
+
 ### `POST /api/v1/chat/stream`
 
 The request is identical. The response is `text/event-stream` and exposes only:
@@ -48,6 +50,36 @@ The request is identical. The response is `text/event-stream` and exposes only:
 A stream ending without `turn.completed` is a provider failure. Once any assistant delta has been emitted, a broken stream is not retried.
 
 ## Sessions
+
+### `POST /api/v1/sessions/resume`
+
+The token is accepted only in a strict JSON body, never in a URL or query string:
+
+```json
+{
+  "resumeToken": "opaque-token"
+}
+```
+
+The response replaces any browser-cached history with canonical Runtime history and refreshes the token:
+
+```json
+{
+  "session": {
+    "id": "skein-session-id",
+    "userId": "demo-user",
+    "status": "ACTIVE",
+    "revision": 0,
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "updatedAt": "2026-01-01T00:00:00.000Z",
+    "lastActiveAt": "2026-01-01T00:00:00.000Z"
+  },
+  "messages": [],
+  "resumeToken": "refreshed-opaque-token"
+}
+```
+
+If the Skein aggregate still exists and its owner/provider binding matches, the endpoint returns its complete canonical history. Otherwise a recovery-capable adapter retrieves external history and Runtime atomically restores the original Skein `sessionId`, owner, private binding, messages and a default context at revision `0`. Token tampering is rejected as `VALIDATION_ERROR`; owner/provider/profile mismatches are indistinguishable from `SESSION_NOT_FOUND`. V1 composes live restart recovery only for Dify.
 
 ### `GET /api/v1/sessions/:sessionId`
 

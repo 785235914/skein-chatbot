@@ -690,18 +690,27 @@ describe("ChatRuntime session resume", () => {
       session: { id: "restored-session", revision: 0, status: "ACTIVE" },
       messages: [
         {
-          id: "history:entry-1:user",
+          id: "history:entry-1:0-user",
           role: "USER",
           content: "Earlier question",
         },
         {
-          id: "history:entry-1:assistant",
+          id: "history:entry-1:1-assistant",
           role: "ASSISTANT",
           content: "Earlier answer",
         },
       ],
       resumeToken: expect.stringMatching(/^opaque-token-/u),
     });
+    expect(
+      [...restored.messages]
+        .sort(
+          (left, right) =>
+            left.createdAt.localeCompare(right.createdAt) ||
+            left.id.localeCompare(right.id),
+        )
+        .map((message) => message.role),
+    ).toEqual(["USER", "ASSISTANT"]);
 
     await runtime.chat({
       sessionId: "restored-session",
