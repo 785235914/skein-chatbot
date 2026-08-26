@@ -27,7 +27,7 @@ export default defineConfig({
     }
   },
   test: {
-    include: ["{apps,packages,scripts}/**/*.test.ts"],
+    include: ["{apps,packages,scripts}/**/*.test.{ts,tsx}"],
     exclude: ["**/dist/**", "**/node_modules/**"],
     coverage: {
       reporter: ["text", "json-summary"]

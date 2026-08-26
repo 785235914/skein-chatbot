@@ -1,14 +1,28 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent } from "react";
 import type {
   ChatMode,
   ChatRequest,
   ChatStatus,
+  MessageView,
   PublicError,
   Source,
 } from "@skein-chatbot/contracts";
 
 import { ApiClientError, createApiClient } from "./api.js";
+import {
+  activateCachedConversation,
+  loadConversationCache,
+  saveConversationCache,
+  upsertCachedConversation,
+  type BrowserConversationCache,
+  type CachedConversation,
+  type CachedMessage,
+} from "./conversation-cache.js";
+import {
+  ConversationSidebar,
+  type ConversationRecoveryState,
+} from "./conversation-sidebar.js";
 import { MarkdownMessage } from "./message-markdown.js";
 
 type LocalRole = "assistant" | "user";
@@ -17,6 +31,7 @@ interface LocalMessage {
   id: string;
   role: LocalRole;
   content: string;
+  createdAt: string;
   status?: ChatStatus;
   sources?: Source[];
   followUpQuestion?: string;
@@ -31,6 +46,52 @@ interface DisplayError {
 }
 
 const makeLocalId = (): string => crypto.randomUUID();
+
+const cachedMessagesToLocal = (
+  messages: readonly CachedMessage[],
+): LocalMessage[] =>
+  messages.map((message) => ({
+    id: message.id,
+    role: message.role === "USER" ? "user" : "assistant",
+    content: message.content,
+    createdAt: message.createdAt,
+  }));
+
+const restoredMessagesToLocal = (
+  messages: readonly MessageView[],
+): LocalMessage[] =>
+  messages
+    .filter(
+      (message): message is MessageView & { role: "USER" | "ASSISTANT" } =>
+        message.role === "USER" || message.role === "ASSISTANT",
+    )
+    .map((message) => ({
+      id: message.id,
+      role: message.role === "USER" ? "user" : "assistant",
+      content: message.content,
+      createdAt: message.createdAt,
+    }));
+
+const localMessagesToCache = (
+  messages: readonly LocalMessage[],
+): CachedMessage[] =>
+  messages
+    .filter((message) => message.pending !== true)
+    .slice(-400)
+    .map((message) => ({
+      id: message.id,
+      role: message.role === "user" ? "USER" : "ASSISTANT",
+      content: message.content,
+      createdAt: message.createdAt,
+    }));
+
+const titleFromMessages = (messages: readonly LocalMessage[]): string => {
+  const firstUserMessage = messages.find((message) => message.role === "user");
+  const normalized = (firstUserMessage?.content ?? "Conversation")
+    .replace(/\s+/gu, " ")
+    .trim();
+  return Array.from(normalized || "Conversation").slice(0, 160).join("");
+};
 
 const isAbortError = (error: unknown): boolean =>
   error instanceof DOMException && error.name === "AbortError";
@@ -58,23 +119,193 @@ export function App() {
       createApiClient({ baseUrl: import.meta.env.VITE_API_BASE_URL ?? "" }),
     [],
   );
-  const [messages, setMessages] = useState<LocalMessage[]>([]);
-  const [sessionId, setSessionId] = useState<string>();
+  const [initialCacheLoad] = useState(() =>
+    loadConversationCache(window.localStorage),
+  );
+  const initialConversation = initialCacheLoad.cache.conversations.find(
+    (conversation) =>
+      conversation.sessionId === initialCacheLoad.cache.activeSessionId,
+  );
+  const [browserCache, setBrowserCache] = useState<BrowserConversationCache>(
+    initialCacheLoad.cache,
+  );
+  const cacheRef = useRef(browserCache);
+  const cachePersistenceEnabled = useRef(
+    initialCacheLoad.warning === undefined,
+  );
+  const [messages, setMessageState] = useState<LocalMessage[]>(() =>
+    initialConversation === undefined
+      ? []
+      : cachedMessagesToLocal(initialConversation.messages),
+  );
+  const messagesRef = useRef(messages);
+  const [sessionId, setSessionId] = useState<string | undefined>(
+    initialConversation?.sessionId,
+  );
   const [mode, setMode] = useState<ChatMode>("quick");
   const [draft, setDraft] = useState("");
-  const [statusText, setStatusText] = useState("Ready");
+  const [statusText, setStatusText] = useState(
+    initialConversation?.resumeToken === undefined ? "Ready" : "Restoring",
+  );
   const [displayError, setDisplayError] = useState<DisplayError>();
   const [lastFailedMessage, setLastFailedMessage] = useState<string>();
   const [isRunning, setIsRunning] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [cacheWarning, setCacheWarning] = useState<string | undefined>(
+    initialCacheLoad.warning,
+  );
+  const [recoveryState, setRecoveryState] =
+    useState<ConversationRecoveryState>(
+      initialConversation?.resumeToken === undefined ? "idle" : "recovering",
+    );
   const activeController = useRef<AbortController | undefined>(undefined);
+  const recoveryController = useRef<AbortController | undefined>(undefined);
+  const recoverySequence = useRef(0);
+
+  const replaceMessages = useCallback(
+    (
+      update:
+        | LocalMessage[]
+        | ((current: LocalMessage[]) => LocalMessage[]),
+    ) => {
+      const next =
+        typeof update === "function" ? update(messagesRef.current) : update;
+      messagesRef.current = next;
+      setMessageState(next);
+    },
+    [],
+  );
+
+  const applyCache = useCallback((next: BrowserConversationCache) => {
+    cacheRef.current = next;
+    setBrowserCache(next);
+    if (!cachePersistenceEnabled.current) {
+      return;
+    }
+    const result = saveConversationCache(window.localStorage, next);
+    if (!result.saved) {
+      setCacheWarning(result.warning);
+    }
+  }, []);
+
+  const persistConversation = useCallback(
+    (
+      nextSessionId: string,
+      nextResumeToken: string | undefined,
+      updatedAt: string,
+    ) => {
+      const existing = cacheRef.current.conversations.find(
+        (conversation) => conversation.sessionId === nextSessionId,
+      );
+      const resumeToken = nextResumeToken ?? existing?.resumeToken;
+      const conversation: CachedConversation = {
+        sessionId: nextSessionId,
+        title: existing?.title ?? titleFromMessages(messagesRef.current),
+        updatedAt,
+        messages: localMessagesToCache(messagesRef.current),
+        ...(resumeToken === undefined ? {} : { resumeToken }),
+      };
+      try {
+        applyCache(
+          upsertCachedConversation(cacheRef.current, conversation, true),
+        );
+      } catch {
+        setCacheWarning("Saved conversations could not be updated.");
+      }
+    },
+    [applyCache],
+  );
 
   const updateAssistant = useCallback(
     (id: string, update: Partial<LocalMessage>) => {
-      setMessages((current) =>
+      replaceMessages((current) =>
         current.map((message) =>
           message.id === id ? { ...message, ...update } : message,
         ),
       );
+    },
+    [replaceMessages],
+  );
+
+  const recoverConversation = useCallback(
+    async (conversation: CachedConversation) => {
+      if (conversation.resumeToken === undefined) {
+        setRecoveryState("idle");
+        return;
+      }
+      const sequence = recoverySequence.current + 1;
+      recoverySequence.current = sequence;
+      recoveryController.current?.abort();
+      const controller = new AbortController();
+      recoveryController.current = controller;
+      setRecoveryState("recovering");
+      setStatusText("Restoring conversation");
+      setDisplayError(undefined);
+
+      try {
+        const response = await client.resumeSession(
+          conversation.resumeToken,
+          controller.signal,
+        );
+        if (recoverySequence.current !== sequence) {
+          return;
+        }
+        if (response.session.id !== conversation.sessionId) {
+          throw new ApiClientError(
+            "The server returned an invalid resume response.",
+          );
+        }
+        const restored = restoredMessagesToLocal(response.messages);
+        replaceMessages(restored);
+        setSessionId(response.session.id);
+        const nextConversation: CachedConversation = {
+          sessionId: response.session.id,
+          resumeToken: response.resumeToken,
+          title: conversation.title,
+          updatedAt: response.session.updatedAt,
+          messages: localMessagesToCache(restored),
+        };
+        applyCache(
+          upsertCachedConversation(
+            cacheRef.current,
+            nextConversation,
+            true,
+          ),
+        );
+        setRecoveryState("idle");
+        setStatusText("Ready");
+      } catch (error) {
+        if (
+          recoverySequence.current !== sequence ||
+          isAbortError(error)
+        ) {
+          return;
+        }
+        setRecoveryState("failed");
+        setStatusText("Recovery failed");
+      } finally {
+        if (recoveryController.current === controller) {
+          recoveryController.current = undefined;
+        }
+      }
+    },
+    [applyCache, client, replaceMessages],
+  );
+
+  useEffect(() => {
+    if (initialConversation?.resumeToken === undefined) {
+      return;
+    }
+    void recoverConversation(initialConversation);
+    return () => {
+      recoverySequence.current += 1;
+      recoveryController.current?.abort();
+    };
+  }, [initialConversation, recoverConversation]);
+
+  useEffect(
+    () => () => {
+      activeController.current?.abort();
     },
     [],
   );
@@ -82,11 +313,16 @@ export function App() {
   const runRequest = useCallback(
     async (message: string, includeUserMessage: boolean) => {
       const trimmedMessage = message.trim();
-      if (trimmedMessage.length === 0 || isRunning) {
+      if (
+        trimmedMessage.length === 0 ||
+        isRunning ||
+        recoveryState !== "idle"
+      ) {
         return;
       }
 
       const assistantId = makeLocalId();
+      const createdAt = new Date().toISOString();
       const request: ChatRequest = {
         message: trimmedMessage,
         mode,
@@ -97,18 +333,20 @@ export function App() {
       if (includeUserMessage) {
         nextMessages.push({
           content: trimmedMessage,
+          createdAt,
           id: makeLocalId(),
           role: "user",
         });
       }
       nextMessages.push({
         content: "",
+        createdAt,
         id: assistantId,
         pending: true,
         role: "assistant",
       });
 
-      setMessages((current) => [...current, ...nextMessages]);
+      replaceMessages((current) => [...current, ...nextMessages]);
       setDisplayError(undefined);
       setLastFailedMessage(undefined);
       setIsRunning(true);
@@ -136,7 +374,7 @@ export function App() {
               updateAssistant(assistantId, { content: streamedAnswer });
               break;
             case "source.added":
-              setMessages((current) =>
+              replaceMessages((current) =>
                 current.map((item) =>
                   item.id === assistantId
                     ? {
@@ -159,6 +397,11 @@ export function App() {
                 sources: event.result.sources,
                 status: event.result.status,
               });
+              persistConversation(
+                event.result.sessionId,
+                event.result.resumeToken,
+                new Date().toISOString(),
+              );
               break;
             case "turn.failed":
               receivedTerminalEvent = true;
@@ -183,6 +426,13 @@ export function App() {
             pending: false,
             status: streamedAnswer.length > 0 ? "PARTIAL" : "ERROR",
           });
+          if (sessionId !== undefined) {
+            persistConversation(
+              sessionId,
+              undefined,
+              new Date().toISOString(),
+            );
+          }
         } else {
           const nextError = toDisplayError(error);
           setDisplayError(nextError);
@@ -193,6 +443,13 @@ export function App() {
             pending: false,
             status: streamedAnswer.length > 0 ? "PARTIAL" : "ERROR",
           });
+          if (
+            error instanceof ApiClientError &&
+            error.publicError?.code === "SESSION_NOT_FOUND" &&
+            sessionId !== undefined
+          ) {
+            setRecoveryState("failed");
+          }
         }
       } finally {
         if (activeController.current === controller) {
@@ -201,7 +458,16 @@ export function App() {
         }
       }
     },
-    [client, isRunning, mode, sessionId, updateAssistant],
+    [
+      client,
+      isRunning,
+      mode,
+      persistConversation,
+      recoveryState,
+      replaceMessages,
+      sessionId,
+      updateAssistant,
+    ],
   );
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
@@ -225,22 +491,80 @@ export function App() {
   };
 
   const handleNewConversation = () => {
-    const controller = activeController.current;
-    activeController.current = undefined;
-    controller?.abort();
-    setIsRunning(false);
-    setMessages([]);
+    if (isRunning || recoveryState === "recovering") {
+      return;
+    }
+    recoverySequence.current += 1;
+    recoveryController.current?.abort();
+    recoveryController.current = undefined;
+    replaceMessages([]);
     setSessionId(undefined);
+    setDraft("");
     setDisplayError(undefined);
     setLastFailedMessage(undefined);
+    setRecoveryState("idle");
     setStatusText("Ready");
+    setDrawerOpen(false);
+    try {
+      applyCache(activateCachedConversation(cacheRef.current, undefined));
+    } catch {
+      setCacheWarning("Saved conversations could not be updated.");
+    }
   };
 
-  const handleRetry = () => {
+  const handleRetryRequest = () => {
     if (lastFailedMessage !== undefined) {
       void runRequest(lastFailedMessage, false);
     }
   };
+
+  const handleSelectConversation = (selectedSessionId: string) => {
+    if (isRunning || recoveryState === "recovering") {
+      return;
+    }
+    const conversation = cacheRef.current.conversations.find(
+      (item) => item.sessionId === selectedSessionId,
+    );
+    if (conversation === undefined) {
+      return;
+    }
+    replaceMessages(cachedMessagesToLocal(conversation.messages));
+    setSessionId(conversation.sessionId);
+    setDisplayError(undefined);
+    setLastFailedMessage(undefined);
+    setDrawerOpen(false);
+    setRecoveryState(
+      conversation.resumeToken === undefined ? "idle" : "recovering",
+    );
+    try {
+      applyCache(
+        activateCachedConversation(cacheRef.current, conversation.sessionId),
+      );
+    } catch {
+      setCacheWarning("Saved conversations could not be updated.");
+    }
+    if (conversation.resumeToken !== undefined) {
+      void recoverConversation(conversation);
+    } else {
+      setStatusText("Ready");
+    }
+  };
+
+  const handleRetryRecovery = () => {
+    const conversation = cacheRef.current.conversations.find(
+      (item) => item.sessionId === sessionId,
+    );
+    if (conversation?.resumeToken !== undefined) {
+      void recoverConversation(conversation);
+    }
+  };
+
+  const composerDisabled = isRunning || recoveryState !== "idle";
+  const canRetryRecovery = browserCache.conversations.some(
+    (conversation) =>
+      conversation.sessionId === sessionId &&
+      conversation.resumeToken !== undefined,
+  );
 
   return (
     <div className="app-shell">
@@ -250,130 +574,162 @@ export function App() {
           <h1>Skein Chatbot</h1>
         </div>
         <button
-          className="secondary-button"
-          disabled={messages.length === 0 && sessionId === undefined}
-          onClick={handleNewConversation}
+          aria-controls="conversation-sidebar"
+          aria-expanded={drawerOpen}
+          className="sidebar-toggle-button"
+          onClick={() => setDrawerOpen((current) => !current)}
           type="button"
         >
-          New conversation
+          Conversation history
         </button>
       </header>
 
-      <main className="chat-panel">
-        <section
-          aria-label="Conversation"
-          aria-live="polite"
-          className="conversation"
-        >
-          {messages.length === 0 ? (
-            <div className="empty-state">
-              <span className="empty-mark" aria-hidden="true">
-                S
-              </span>
-              <h2>Start a test conversation</h2>
-              <p>
-                This replaceable client talks only to the stable Skein REST and
-                event-stream endpoints.
-              </p>
-            </div>
-          ) : (
-            messages.map((message) => (
-              <MessageCard key={message.id} message={message} />
-            ))
-          )}
-        </section>
+      {cacheWarning === undefined ? null : (
+        <div className="cache-warning" role="alert">
+          <strong>Local history warning</strong>
+          <p>{cacheWarning}</p>
+        </div>
+      )}
 
-        <section className="composer-section" aria-label="Message composer">
-          {displayError === undefined ? null : (
-            <div className="error-panel" role="alert">
-              <div>
-                <strong>Request failed</strong>
-                <p>{displayError.message}</p>
-                {displayError.traceId === undefined ? null : (
-                  <small>Trace: {displayError.traceId}</small>
+      <button
+        aria-label="Dismiss conversation history"
+        className={drawerOpen ? "drawer-backdrop is-open" : "drawer-backdrop"}
+        onClick={() => setDrawerOpen(false)}
+        type="button"
+      />
+
+      <div className="workspace-shell">
+        <ConversationSidebar
+          canRetryRecovery={canRetryRecovery}
+          conversations={browserCache.conversations}
+          drawerOpen={drawerOpen}
+          isRunning={isRunning}
+          onClose={() => setDrawerOpen(false)}
+          onNewConversation={handleNewConversation}
+          onRetryRecovery={handleRetryRecovery}
+          onSelectConversation={handleSelectConversation}
+          recoveryState={recoveryState}
+          {...(sessionId === undefined ? {} : { activeSessionId: sessionId })}
+        />
+
+        <main className="chat-panel">
+          <section
+            aria-label="Conversation"
+            aria-live="polite"
+            className="conversation"
+          >
+            {messages.length === 0 ? (
+              <div className="empty-state">
+                <span className="empty-mark" aria-hidden="true">
+                  S
+                </span>
+                <h2>Start a test conversation</h2>
+                <p>
+                  This replaceable client talks only to the stable Skein REST
+                  and event-stream endpoints.
+                </p>
+              </div>
+            ) : (
+              messages.map((message) => (
+                <MessageCard key={message.id} message={message} />
+              ))
+            )}
+          </section>
+
+          <section className="composer-section" aria-label="Message composer">
+            {displayError === undefined ? null : (
+              <div className="error-panel" role="alert">
+                <div>
+                  <strong>Request failed</strong>
+                  <p>{displayError.message}</p>
+                  {displayError.traceId === undefined ? null : (
+                    <small>Trace: {displayError.traceId}</small>
+                  )}
+                </div>
+                {displayError.retryable && lastFailedMessage !== undefined ? (
+                  <button
+                    className="retry-button"
+                    disabled={composerDisabled}
+                    onClick={handleRetryRequest}
+                    type="button"
+                  >
+                    Retry
+                  </button>
+                ) : null}
+              </div>
+            )}
+
+            <form className="composer" onSubmit={handleSubmit}>
+              <div className="composer-toolbar">
+                <fieldset disabled={composerDisabled}>
+                  <legend className="sr-only">Response mode</legend>
+                  <label className={mode === "quick" ? "active" : ""}>
+                    <input
+                      checked={mode === "quick"}
+                      name="mode"
+                      onChange={() => setMode("quick")}
+                      type="radio"
+                      value="quick"
+                    />
+                    Quick
+                  </label>
+                  <label className={mode === "deep" ? "active" : ""}>
+                    <input
+                      checked={mode === "deep"}
+                      name="mode"
+                      onChange={() => setMode("deep")}
+                      type="radio"
+                      value="deep"
+                    />
+                    Deep
+                  </label>
+                </fieldset>
+                <span className="runtime-status">
+                  <span
+                    aria-hidden="true"
+                    className={isRunning ? "status-dot active" : "status-dot"}
+                  />
+                  {statusText}
+                </span>
+              </div>
+
+              <textarea
+                aria-label="Message"
+                disabled={composerDisabled}
+                maxLength={32_000}
+                onChange={(event) => setDraft(event.target.value)}
+                onKeyDown={handleComposerKeyDown}
+                placeholder="Ask a question…"
+                rows={3}
+                value={draft}
+              />
+
+              <div className="composer-actions">
+                <span>Enter to send · Shift+Enter for a new line</span>
+                {isRunning ? (
+                  <button
+                    className="stop-button"
+                    onClick={handleStop}
+                    type="button"
+                  >
+                    Stop
+                  </button>
+                ) : (
+                  <button
+                    className="send-button"
+                    disabled={
+                      composerDisabled || draft.trim().length === 0
+                    }
+                    type="submit"
+                  >
+                    Send
+                  </button>
                 )}
               </div>
-              {displayError.retryable && lastFailedMessage !== undefined ? (
-                <button
-                  className="retry-button"
-                  disabled={isRunning}
-                  onClick={handleRetry}
-                  type="button"
-                >
-                  Retry
-                </button>
-              ) : null}
-            </div>
-          )}
-
-          <form className="composer" onSubmit={handleSubmit}>
-            <div className="composer-toolbar">
-              <fieldset disabled={isRunning}>
-                <legend className="sr-only">Response mode</legend>
-                <label className={mode === "quick" ? "active" : ""}>
-                  <input
-                    checked={mode === "quick"}
-                    name="mode"
-                    onChange={() => setMode("quick")}
-                    type="radio"
-                    value="quick"
-                  />
-                  Quick
-                </label>
-                <label className={mode === "deep" ? "active" : ""}>
-                  <input
-                    checked={mode === "deep"}
-                    name="mode"
-                    onChange={() => setMode("deep")}
-                    type="radio"
-                    value="deep"
-                  />
-                  Deep
-                </label>
-              </fieldset>
-              <span className="runtime-status">
-                <span
-                  aria-hidden="true"
-                  className={isRunning ? "status-dot active" : "status-dot"}
-                />
-                {statusText}
-              </span>
-            </div>
-
-            <textarea
-              aria-label="Message"
-              disabled={isRunning}
-              maxLength={32_000}
-              onChange={(event) => setDraft(event.target.value)}
-              onKeyDown={handleComposerKeyDown}
-              placeholder="Ask a question…"
-              rows={3}
-              value={draft}
-            />
-
-            <div className="composer-actions">
-              <span>Enter to send · Shift+Enter for a new line</span>
-              {isRunning ? (
-                <button
-                  className="stop-button"
-                  onClick={handleStop}
-                  type="button"
-                >
-                  Stop
-                </button>
-              ) : (
-                <button
-                  className="send-button"
-                  disabled={draft.trim().length === 0}
-                  type="submit"
-                >
-                  Send
-                </button>
-              )}
-            </div>
-          </form>
-        </section>
-      </main>
+            </form>
+          </section>
+        </main>
+      </div>
     </div>
   );
 }
@@ -437,7 +793,7 @@ function SourceList({ sources }: { sources: Source[] }) {
             {source.url === undefined ? (
               source.title
             ) : (
-              <a href={source.url} rel="noreferrer" target="_blank">
+              <a href={source.url} rel="noopener noreferrer" target="_blank">
                 {source.title}
               </a>
             )}
