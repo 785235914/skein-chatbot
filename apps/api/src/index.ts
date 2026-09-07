@@ -1,21 +1,15 @@
-import dotenv from "dotenv";
+import { loadLocalApiEnvironment } from "./environment.js";
 
 import { createApiApp } from "./app.js";
 import { createDefaultApiRuntime } from "./composition.js";
 import { loadApiConfig } from "./config.js";
 import { createPinoObservability } from "@skein-chatbot/observability";
 
-dotenv.config({
-  path: [".env.local", ".env"],
-  override: false,
-  quiet: true,
-});
-
 const start = async (): Promise<void> => {
   let app: Awaited<ReturnType<typeof createApiApp>> | undefined;
 
   try {
-    const config = loadApiConfig();
+    const config = loadApiConfig(loadLocalApiEnvironment());
     const observability = createPinoObservability({ level: config.logLevel });
     const runtime = await createDefaultApiRuntime(config, { observability });
     app = await createApiApp({
@@ -26,7 +20,7 @@ const start = async (): Promise<void> => {
     await app.listen({ host: config.host, port: config.port });
   } catch {
     if (app === undefined) {
-      process.stderr.write("API startup failed.\n");
+      process.stderr.write("API startup failed. Run pnpm doctor with the same provider to check configuration.\n");
     } else {
       app.log.error("API startup failed");
       try {

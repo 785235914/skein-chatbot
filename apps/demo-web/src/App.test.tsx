@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ResumeSessionResponse, RuntimeEvent } from "@skein-chatbot/contracts";
@@ -77,11 +77,85 @@ const restoredResponse = (
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
+  vi.useRealTimers();
   localStorage.clear();
   vi.unstubAllGlobals();
 });
 
 describe("App conversation persistence", () => {
+  it("renders a usable composer when browser storage access is denied", () => {
+    vi.spyOn(window, "localStorage", "get").mockImplementation(() => {
+      throw new DOMException("Storage denied", "SecurityError");
+    });
+    render(<App />);
+    expect(screen.getByText("Saved conversations could not be loaded.")).toBeTruthy();
+    expect(screen.getByRole("textbox", { name: "Message" })).toHaveProperty("disabled", false);
+  });
+
+  it("allows leaving a pending recovery and ignores its late response", async () => {
+    saveConversationCache(localStorage, cachedDocument());
+    let resolveResume!: (response: Response) => void;
+    const pending = new Promise<Response>((resolve) => { resolveResume = resolve; });
+    vi.stubGlobal("fetch", vi.fn(() => pending));
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "New conversation" }));
+    expect(screen.getByText("Start a test conversation")).toBeTruthy();
+    await act(async () => {
+      resolveResume(new Response(JSON.stringify(restoredResponse())));
+      await pending;
+    });
+    expect(screen.queryByText("Canonical restored answer")).toBeNull();
+    expect(loadConversationCache(localStorage).cache.activeSessionId).toBeUndefined();
+  });
+
+  it("times out a stalled recovery while preserving cached history", async () => {
+    vi.useFakeTimers();
+    saveConversationCache(localStorage, cachedDocument());
+    const persisted = localStorage.getItem(CONVERSATION_CACHE_KEY);
+    vi.stubGlobal("fetch", vi.fn((_url, options: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      options.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
+    })));
+    render(<App />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(screen.getByRole("button", { name: "Retry recovery" })).toBeTruthy();
+    expect(screen.getByText("Cached answer")).toBeTruthy();
+    expect(localStorage.getItem(CONVERSATION_CACHE_KEY)).toBe(persisted);
+  });
+
+  it("searches saved sessions and keeps drafts with their selected conversation", () => {
+    const first = { ...cachedDocument().conversations[0]!, resumeToken: undefined };
+    const second = { ...first, sessionId: "session-2", title: "Second conversation", messages: [] };
+    saveConversationCache(localStorage, cachedDocument({ conversations: [first, second] }));
+    render(<App />);
+    const composer = screen.getByRole("textbox", { name: "Message" });
+    fireEvent.change(composer, { target: { value: "Draft for first" } });
+    const search = screen.getByRole("searchbox", { name: "Search conversations" });
+    fireEvent.change(search, { target: { value: "session-2" } });
+    expect(screen.queryByRole("button", { name: /Cached conversation/u })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Second conversation/u }));
+    expect(composer).toHaveProperty("value", "");
+    fireEvent.change(search, { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: /Cached conversation/u }));
+    expect(composer).toHaveProperty("value", "Draft for first");
+    expect(loadConversationCache(localStorage).cache.activeSessionId).toBe("session-1");
+  });
+
+  it("refreshes canonical history using the renewed opaque token", async () => {
+    saveConversationCache(localStorage, cachedDocument());
+    const requests: unknown[] = [];
+    vi.stubGlobal("fetch", vi.fn((_url, options: RequestInit) => {
+      requests.push(JSON.parse(String(options.body)));
+      const response = restoredResponse();
+      if (requests.length === 2) response.messages[1]!.content = "Updated canonical answer";
+      return Promise.resolve(new Response(JSON.stringify(response)));
+    }));
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Refresh history" }));
+    expect(await screen.findByText("Updated canonical answer")).toBeTruthy();
+    expect(requests).toEqual([{ resumeToken: "opaque-token" }, { resumeToken: "refreshed-token" }]);
+  });
+
   it("shows cached history immediately, then replaces it with canonical restored history", async () => {
     saveConversationCache(localStorage, cachedDocument());
     let resolveResume = (_response: Response): void => undefined;

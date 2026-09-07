@@ -217,3 +217,28 @@ export const loadApiConfig = (
       : { providerKeyPrefix: parsed.ORCHESTRATOR_PROVIDER_KEY }),
   };
 };
+
+/** Values and validation messages may contain secrets; return field names only. */
+export const diagnoseApiConfig = (environment: NodeJS.ProcessEnv) => {
+  try {
+    const config = loadApiConfig(environment);
+    return {
+      status: "PASS" as const,
+      provider: config.orchestratorProvider,
+      persistence: config.persistence.kind,
+      restartRecovery: config.orchestratorProvider === "dify",
+      invalidFields: [] as string[],
+    };
+  } catch (error) {
+    const knownFields = new Set([
+      ...Object.keys(CommonEnvironmentShape),
+      ...Object.keys(DifyEnvironmentSchema.shape),
+      ...Object.keys(MockEnvironmentSchema.shape),
+    ]);
+    const invalidFields = error instanceof z.ZodError
+      ? [...new Set(error.issues.map((issue) => String(issue.path[0])))]
+          .filter((field) => knownFields.has(field)).sort()
+      : ["LOG_LEVEL"];
+    return { status: "FAIL" as const, invalidFields };
+  }
+};

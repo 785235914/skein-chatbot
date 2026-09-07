@@ -1,5 +1,11 @@
 # Implementation Status
 
+## History hardening — 2026-09-07
+
+- Completed: history search and explicit refresh; 30-second recovery timeout; cancel-on-switch with stale-response rejection; session-specific page-local drafts; safe browser-storage denial; value-free configuration doctor; shared API/doctor environment loading; consolidated `pnpm check`; Linux/Windows GitHub CI.
+- Verification: `pnpm check` passed 31 files / 489 tests, lint, typecheck, build and scrub. Independent review accepted with no Critical/Important findings. Live Mock browser create/reload/search/switch/continue journey passed.
+- Startup: API and Demo running locally via `pnpm dev:mock`. Real Dify credentials and resume secret are incomplete; real-provider smoke remains NOT RUN. Details and limits: [hardening review](history-hardening-review.md).
+
 ## Milestone 0 — Source Analysis
 
 - Status: completed

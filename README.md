@@ -16,10 +16,15 @@ Use the provider-free Mock journey first:
 
 ```text
 pnpm install
+pnpm build
 pnpm dev:mock
 ```
 
 `pnpm dev:mock` needs no Dify key, cloud account or PostgreSQL credentials. When `DATABASE_URL` is empty, the API uses the in-memory store. The React/Vite Demo is the canonical client at its displayed local URL.
+
+Use Node 24 and the pinned pnpm version. Development runs API and Demo together; `pnpm dev` starts only the API. Default ports are API 3000 and Demo 5173. Stop with Ctrl+C. If a port is occupied, stop the process you own or configure an alternate API `PORT` and matching Demo `VITE_DEV_API_TARGET` in its own ignored local environment file.
+
+For Dify, copy `.env.example` to `apps/api/.env.local`, fill `DIFY_BASE_URL` (the API base ending in `/v1`, without `/chat-messages`), `DIFY_API_KEY`, `DIFY_PROFILE=default`, and a generated `SESSION_RESUME_SECRET`. Keep the same secret across restarts. Run `pnpm doctor:dify` before `pnpm dev:dify`. The doctor validates configuration without connecting to Dify or a database and prints only invalid field names. `pnpm doctor` uses the configured provider (Mock when unset).
 
 `ENABLE_MEMORY`, `ENABLE_COMPACTION`, `ENABLE_STREAMING`, and `ENABLE_DEEP_MODE` in `.env.example` are reserved, no-op V1 compatibility entries. V1 currently keeps those capabilities available; setting any of these entries to `false` does not disable or otherwise change Runtime behavior.
 
@@ -56,6 +61,10 @@ SESSION_RESUME_SECRET=replace-with-generated-base64-value
 ```
 
 Changing this secret invalidates existing browser resume tokens. Mock mode intentionally issues no token; tokenless Mock conversations remain usable from the browser cache while the same API process still owns their in-memory sessions.
+
+Find saved conversations with the sidebar search (title or public Skein session ID). Selecting one shows cached messages immediately and reconciles them with server history when a token exists. **Refresh history** repeats this reconciliation. Recovery times out after 30 seconds with retry available; you can choose another conversation or start a new one while it is pending. Unsent drafts stay with each selected conversation for the current page lifetime.
+
+This browser index contains only conversations saved through Skein on the same browser origin. It does not import arbitrary existing Dify web-app conversations from a pasted ID. Dify requires the original app and `user` identity to read its history; the backend preserves that association inside the encrypted token. Changing the browser origin/port creates a separate local cache. Clearing browser data removes this local index; keep PostgreSQL for complete durable Skein state when needed.
 
 ## Context
 
@@ -99,6 +108,8 @@ Set `LOG_LEVEL` to one of the supported Pino levels; `.env.example` uses `info`.
 
 ## Testing
 
+Run the complete provider-free gate with `pnpm check`. It generates the Prisma client, then runs lint, typecheck, tests, build and the public-candidate scrub. GitHub Actions runs the same command on Linux and Windows with Node 24 and no external service credentials.
+
 ```text
 pnpm scrub
 pnpm lint
@@ -118,6 +129,8 @@ Add provider behavior through a `BusinessOrchestrator`, persistence through `Run
 Future work may add independently replaceable adapters and transport gateways without changing Core or the public contract.
 
 ## Open-source Security Notes
+
+This repository is a starter framework and single-user local demo. The sample routes use a fixed demo identity. Before shared Internet deployment, supply authentication and session ownership checks, rate limits, HTTPS and an appropriate persistence/retention policy. Encrypted resume tokens alone are not a multi-user authorization system.
 
 Run `pnpm scrub` before publishing. It scans only Git cached and unignored public candidates and reports rule, repository-relative path and line number without printing matched values. Keep credentials in ignored local configuration; never commit provider keys, connection strings, private keys, private network addresses or machine paths.
 

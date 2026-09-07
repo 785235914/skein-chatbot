@@ -47,6 +47,12 @@ interface DisplayError {
 
 const makeLocalId = (): string => crypto.randomUUID();
 
+// Resolve the browser getter inside the cache module's guarded operations.
+const browserStorage = {
+  getItem: (key: string) => window.localStorage.getItem(key),
+  setItem: (key: string, value: string) => window.localStorage.setItem(key, value),
+};
+
 const cachedMessagesToLocal = (
   messages: readonly CachedMessage[],
 ): LocalMessage[] =>
@@ -119,7 +125,7 @@ export function App() {
     [],
   );
   const [initialCacheLoad] = useState(() =>
-    loadConversationCache(window.localStorage),
+    loadConversationCache(browserStorage),
   );
   const initialConversation = initialCacheLoad.cache.conversations.find(
     (conversation) =>
@@ -161,6 +167,7 @@ export function App() {
   const recoveryController = useRef<AbortController | undefined>(undefined);
   const recoverySequence = useRef(0);
   const historyOpenerRef = useRef<HTMLButtonElement | null>(null);
+  const conversationDrafts = useRef(new Map<string | undefined, string>());
 
   const closeConversationDrawer = useCallback(() => {
     setDrawerOpen(false);
@@ -189,7 +196,7 @@ export function App() {
     if (!cachePersistenceEnabled.current) {
       return;
     }
-    const result = saveConversationCache(window.localStorage, next);
+    const result = saveConversationCache(browserStorage, next);
     if (!result.saved) {
       setCacheWarning(result.warning);
     }
@@ -249,6 +256,14 @@ export function App() {
       setStatusText("Restoring conversation");
       setDisplayError(undefined);
 
+      const recoveryTimer = setTimeout(() => {
+        if (recoverySequence.current !== sequence) return;
+        recoverySequence.current += 1;
+        controller.abort();
+        setRecoveryState("failed");
+        setStatusText("Recovery timed out. Retry or choose another conversation.");
+      }, 30_000);
+
       try {
         const response = await client.resumeSession(
           conversation.resumeToken,
@@ -295,6 +310,7 @@ export function App() {
         setRecoveryState("failed");
         setStatusText("Recovery failed");
       } finally {
+        clearTimeout(recoveryTimer);
         if (recoveryController.current === controller) {
           recoveryController.current = undefined;
         }
@@ -502,12 +518,13 @@ export function App() {
   };
 
   const handleNewConversation = () => {
-    if (isRunning || recoveryState === "recovering") {
+    if (isRunning) {
       return;
     }
     recoverySequence.current += 1;
     recoveryController.current?.abort();
     recoveryController.current = undefined;
+    conversationDrafts.current.set(sessionId, draft);
     replaceMessages([]);
     setSessionId(undefined);
     setDraft("");
@@ -530,7 +547,7 @@ export function App() {
   };
 
   const handleSelectConversation = (selectedSessionId: string) => {
-    if (isRunning || recoveryState === "recovering") {
+    if (isRunning) {
       return;
     }
     const conversation = cacheRef.current.conversations.find(
@@ -539,6 +556,11 @@ export function App() {
     if (conversation === undefined) {
       return;
     }
+    recoverySequence.current += 1;
+    recoveryController.current?.abort();
+    recoveryController.current = undefined;
+    conversationDrafts.current.set(sessionId, draft);
+    setDraft(conversationDrafts.current.get(selectedSessionId) ?? "");
     replaceMessages(cachedMessagesToLocal(conversation.messages));
     setSessionId(conversation.sessionId);
     setDisplayError(undefined);

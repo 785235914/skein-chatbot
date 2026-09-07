@@ -8,6 +8,9 @@
     "node": ">=22"
   },
   "scripts": {
+    "check": "pnpm db:generate && pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm scrub",
+    "doctor": "pnpm --filter @skein-chatbot/api doctor",
+    "doctor:dify": "cross-env ORCHESTRATOR_PROVIDER=dify pnpm doctor",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",

@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { CachedConversation } from "./conversation-cache.js";
 
 export type ConversationRecoveryState = "idle" | "recovering" | "failed";
@@ -38,8 +39,13 @@ export function ConversationSidebar({
   onRetryRecovery,
   onSelectConversation,
 }: ConversationSidebarProps) {
-  const switchingDisabled = isRunning || recoveryState === "recovering";
+  const switchingDisabled = isRunning;
+  const [search, setSearch] = useState("");
+  const query = search.trim().toLocaleLowerCase();
   const newestFirst = conversations
+    .filter((conversation) =>
+      `${conversation.title} ${conversation.sessionId}`.toLocaleLowerCase().includes(query),
+    )
     .map((conversation, index) => ({ conversation, index }))
     .sort(
       (left, right) =>
@@ -70,6 +76,14 @@ export function ConversationSidebar({
       </div>
 
       <nav aria-label="Conversation history">
+        <input
+          aria-label="Search conversations"
+          type="search"
+          placeholder="Search conversations"
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+          className="history-search"
+        />
         <button
           className="new-conversation-button"
           disabled={switchingDisabled}
@@ -81,7 +95,9 @@ export function ConversationSidebar({
         </button>
 
         {newestFirst.length === 0 ? (
-          <p className="sidebar-empty">No saved conversations yet.</p>
+          <p className="sidebar-empty">
+            {conversations.length === 0 ? "No saved conversations yet." : "No matching conversations."}
+          </p>
         ) : (
           <ol className="conversation-list">
             {newestFirst.map((conversation) => {
@@ -108,6 +124,12 @@ export function ConversationSidebar({
           </ol>
         )}
       </nav>
+
+      {canRetryRecovery && recoveryState === "idle" ? (
+        <button className="retry-button" disabled={isRunning} onClick={onRetryRecovery} type="button">
+          Refresh history
+        </button>
+      ) : null}
 
       {recoveryState === "recovering" ? (
         <p className="recovery-notice" role="status">

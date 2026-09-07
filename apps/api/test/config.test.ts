@@ -1,11 +1,29 @@
 import { describe, expect, it } from "vitest";
 import { ZodError } from "zod";
 
-import { loadApiConfig } from "../src/config.js";
+import { diagnoseApiConfig, loadApiConfig } from "../src/config.js";
 
 const sessionResumeSecret = Buffer.alloc(32, 7).toString("base64");
 
 describe("API environment configuration", () => {
+  it("reports only invalid field names without copying configuration values", () => {
+    const secret = "sensitive-value-not-for-output";
+    const report = diagnoseApiConfig({
+      ORCHESTRATOR_PROVIDER: "dify",
+      DIFY_BASE_URL: secret,
+      DIFY_API_KEY: secret,
+      SESSION_RESUME_SECRET: secret,
+      DIFY_PROFILE: "default",
+    });
+    expect(report).toEqual({ status: "FAIL", invalidFields: ["DIFY_BASE_URL", "SESSION_RESUME_SECRET"] });
+    expect(JSON.stringify(report)).not.toContain(secret);
+    expect(diagnoseApiConfig({ LOG_LEVEL: secret })).toEqual({ status: "FAIL", invalidFields: ["LOG_LEVEL"] });
+  });
+
+  it("distinguishes provider-free startup from configured restart recovery", () => {
+    expect(diagnoseApiConfig({})).toMatchObject({ status: "PASS", provider: "mock", restartRecovery: false });
+    expect(diagnoseApiConfig({ ORCHESTRATOR_PROVIDER: "dify" })).toMatchObject({ status: "FAIL" });
+  });
   it("provides a fully validated provider-free Runtime configuration", () => {
     expect(loadApiConfig({})).toEqual({
       host: "127.0.0.1",

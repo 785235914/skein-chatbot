@@ -125,6 +125,6 @@ describe("ConversationSidebar", () => {
   it("disables conversation switching and creation while a turn is active", () => {
     const html = renderSidebar({ isRunning: true });
 
-    expect(html.match(/disabled=""/gu)).toHaveLength(3);
+    expect(html.match(/disabled=""/gu)).toHaveLength(4);
   });
 });

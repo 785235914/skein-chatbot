@@ -894,3 +894,13 @@ a:focus-visible {
     transition-duration: 0.01ms !important;
   }
 }
+.history-search {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  margin-bottom: 12px;
+  padding: 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  font: inherit;
+}
